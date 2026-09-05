@@ -1,0 +1,77 @@
+{
+  "updatedAt": "2026-09-05T09:42:29.229Z",
+  "source": "https://searx.space/data/instances.json",
+  "note": "json 可用性 checker 不提供，需保存后 make smoke 自测；社区实例可见查询明文，敏感内容请自建。",
+  "instances": [
+    {
+      "url": "https://searx.linxx.net/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 39,
+      "version": "2026.9.4+23e7e4da0"
+    },
+    {
+      "url": "https://priv.au/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 48,
+      "version": "2026.9.4+f79714fd3"
+    },
+    {
+      "url": "https://searx.tiekoetter.com/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 55,
+      "version": "2026.9.3+a1144dda3 (5e882f3fd)"
+    },
+    {
+      "url": "https://searxng.website/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 63,
+      "version": "2026.9.5+bcbfd5169"
+    },
+    {
+      "url": "https://searxng.site/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 72,
+      "version": "2026.9.5+26cbcc236"
+    },
+    {
+      "url": "https://search.hbubli.cc/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 81,
+      "version": "2026.9.4+15b0c8ef3"
+    },
+    {
+      "url": "https://search.mdosch.de/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 85,
+      "version": "2026.9.4+23e7e4da0"
+    },
+    {
+      "url": "https://sx.xo.st/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 126,
+      "version": "2026.9.4+15b0c8ef3"
+    },
+    {
+      "url": "https://searx.oloke.xyz/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 141,
+      "version": "2026.9.4+15b0c8ef3"
+    },
+    {
+      "url": "https://search.pereira.is/",
+      "status": "up",
+      "uptimePct": 100,
+      "latencyMs": 143,
+      "version": "2026.9.4+15b0c8ef3"
+    }
+  ]
+}

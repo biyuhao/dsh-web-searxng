@@ -1,0 +1,57 @@
+services:
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    mem_limit: 96m
+    mem_reservation: 48m
+    volumes:
+      - valkey-data:/data
+
+  core:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./core-config:/etc/searxng:ro
+    env_file: .env
+    environment:
+      - GRANIAN_WORKERS=1
+      - GRANIAN_THREADS=2
+      - GRANIAN_INTERFACE=wsgi
+      - SEARXNG_BASE_URL=https://search.example.com/
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY}
+      - SEARXNG_DEBUG=false
+    depends_on:
+      - valkey
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: docker.io/caddy:2-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - core
+
+volumes:
+  valkey-data:
+  caddy-data:
+  caddy-config:

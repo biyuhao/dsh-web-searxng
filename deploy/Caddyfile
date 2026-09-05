@@ -1,0 +1,12 @@
+search.example.com {
+	basicauth {
+		dsh  $2a$14$REPLACE_WITH_caddy_hash-password_OUTPUT
+	}
+	@api path /search /healthz /stats/errors
+	handle @api {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond "Not Found" 404
+	}
+}

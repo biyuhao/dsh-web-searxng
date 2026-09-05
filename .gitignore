@@ -1,0 +1,20 @@
+# Deps / build output / local caches — never commit
+node_modules/
+.pnpm-store/
+.test-build/
+lib/
+
+# Local env & secrets — never commit
+.env
+*.pem
+*.key
+credentials*.yaml
+credentials*.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json

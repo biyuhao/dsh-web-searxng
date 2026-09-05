@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+# 镜像没有 dsh-invariants 的 stable 0.1.x（只有 prerelease），而某条传递链要
+# ^0.1.2（stable range、无解）；钉到 rc.1。仅构建期类型用，运行时走宿主版本。
+overrides:
+  "@deepseek-ai/dsh-invariants": "0.1.2-rc.1"

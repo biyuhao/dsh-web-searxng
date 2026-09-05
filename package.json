@@ -1,0 +1,92 @@
+{
+  "name": "dsh-web-searxng",
+  "version": "0.1.0",
+  "description": "DSH plugin: SearXNG-backed search provider for ctx.web (self-hosted, 1GB-VPS friendly)",
+  "type": "module",
+  "main": "lib/host/index.js",
+  "types": "lib/host/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/host/index.d.ts",
+      "default": "./lib/host/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/biyuhao/dsh-web-searxng"
+  },
+  "homepage": "https://github.com/biyuhao/dsh-web-searxng",
+  "bugs": {
+    "url": "https://github.com/biyuhao/dsh-web-searxng/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "searxng",
+    "web-search",
+    "self-hosted"
+  ],
+  "author": "biyuhao",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "pnpm run build:host && pnpm run build:client",
+    "build:host": "tsc -p tsconfig.host.json",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.host.json && tsc --noEmit -p tsconfig.client.json",
+    "clean": "rm -rf lib .test-build",
+    "update-instances": "node scripts/update-instances.mjs",
+    "prepublishOnly": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0",
+    "@deepseek-ai/dsh-launch-environment": ">=0.1.0-alpha.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.0-alpha.0",
+    "@deepseek-ai/dsh-web": ">=0.1.0-alpha.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": false
+    }
+  },
+  "dependencies": {
+    "socks": "^2.8.10",
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-launch-environment": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-settings": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-web": "0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.25.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,60 @@
+general:
+  debug: false
+  instance_name: "dsh-private-search"
+
+server:
+  secret_key: "@SEARXNG_SECRET_KEY@"
+  limiter: true
+  image_proxy: false
+  http_protocol_version: "1.1"
+  method: "GET"
+  default_http_headers:
+    User-Agent: "Mozilla/5.0 (X11; Linux x86_64) dsh-searxng/1.0"
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  default_lang: "zh-CN"
+  formats:
+    - html
+    - json
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    timeout: 6.0
+  - name: brave
+    engine: brave
+    shortcut: brv
+    timeout: 6.0
+  - name: bing
+    engine: bing
+    shortcut: bi
+    timeout: 6.0
+  - name: mojeek
+    engine: mojeek
+    shortcut: mjk
+    timeout: 6.0
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    timeout: 4.0
+  - name: openalex
+    engine: openalex
+    shortcut: oal
+    timeout: 6.0
+  - name: github
+    engine: github
+    shortcut: gh
+    timeout: 6.0
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 20
+  pool_maxsize: 20
+  enable_http2: false
+
+valkey:
+  url: redis://valkey:6379/0

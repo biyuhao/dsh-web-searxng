@@ -1,0 +1,19 @@
+# dsh-web-searxng — bundle layer
+# 安装方式: dsh plugin --profile web add /path/to/dsh-web-searxng
+# 或发 npm 包后: dsh plugin --profile web add dsh-web-searxng
+#
+# 只有 HOST 行是 loader 入口（specifier 字段是 `name:`）。浏览器 half 由
+# package.json#dsh.client 自动发现、下发到 /plugins/dsh-web-searxng/client.js，
+# 不要加第二行 loader（会把浏览器代码跑在 host 里）。
+- insert:
+    - id: web-searxng/host
+      name: dsh-web-searxng
+      config:
+        baseURL: !!js process.env.SEARXNG_BASE_URL
+        username: !!js process.env.SEARXNG_USERNAME
+        password: !!js process.env.SEARXNG_PASSWORD
+        categories: general
+        language: zh-CN
+        safesearch: 1
+        # 出境代理（出境受限机器必填；settings 卡片同名字段覆盖它）：
+        proxyUrl: !!js process.env.SEARXNG_PROXY_URL

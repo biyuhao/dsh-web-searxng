@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2024", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "lib/client",
+    "rootDir": "src/client",
+    "emitDeclarationOnly": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/client/**/*", "src/shims.d.ts"],
+  "references": []
+}
