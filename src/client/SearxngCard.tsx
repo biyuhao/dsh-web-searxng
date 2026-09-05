@@ -484,6 +484,7 @@ function CommunityPicker(props: {
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [remote, setRemote] = useState<InstancesCache | null>(null)
   const [refresh, setRefresh] = useState<{ status: 'idle' | 'working' | 'fail'; note?: string }>({ status: 'idle' })
+  const [onlyUsable, setOnlyUsable] = useState(true)
   const bump = () => setTick((n) => n + 1)
   // Runtime cache (one-click refresh) wins when newer than the bundle.
   const list = remote?.instances ?? snap.instances
@@ -624,8 +625,7 @@ function CommunityPicker(props: {
     // `tick` re-runs the sort as silent probes settle (cache itself is not reactive).
   }, [snap, remote, proxyUrl, round, tick])
 
-  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {
-    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
+  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
     if (!p || p.status === 'testing') return { mark: '○', text: t('probeRowTesting'), failed: false }
     if (p.status === 'ok') {
       return {
@@ -639,17 +639,39 @@ function CommunityPicker(props: {
     return { mark: '✕', text: p.note, failed: true }
   }
 
+  // "Only usable" (default): rows appear as they pass probing; uncheck to
+  // inspect rows that were probed but failed (with reasons).
+  const displayed = onlyUsable
+    ? ranked.filter((i) => rowProbeCache.get(rowProbeKey(i.url, proxyUrl))?.status === 'ok')
+    : ranked
+  const anyPending = list.some((i) => {
+    const p = rowProbeCache.get(rowProbeKey(i.url, proxyUrl))
+    return !p || p.status === 'testing'
+  })
+
   return (
     <div className="sx_picker">
       <div className="sx_hint">{t('communityDesc')}</div>
       <div className="sx_hint">{t('probeAutoNote')}</div>
+      <label className="sx_hint" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={onlyUsable}
+          disabled={disabled}
+          onChange={(e) => setOnlyUsable(e.target.checked)}
+        />
+        {t('onlyUsable')}
+      </label>
       {progress.total > 0 && progress.done < progress.total && (
         <div className="sx_hint">{t('probeProgress').replace('{done}', String(progress.done)).replace('{total}', String(progress.total))}</div>
       )}
       {list.length === 0 && (
         <div className="sx_hint">{t('communityEmpty')}</div>
       )}
-      {ranked.map((i) => {
+      {list.length > 0 && displayed.length === 0 && !anyPending && (
+        <div className="sx_hint">{t('noUsable')}</div>
+      )}
+      {displayed.map((i) => {
         const st = rowStatus(i.url)
         return (
           <div className="sx_pickRow" key={i.url} style={st.failed ? { opacity: 0.75 } : undefined}>

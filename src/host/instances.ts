@@ -69,7 +69,7 @@ export type CuratedInstance = {
 
 /** Refresh source (overridable for tests) + kept rows. Mirrors scripts/update-instances.mjs. */
 export const INSTANCES_SOURCE = "https://searx.space/data/instances.json";
-export const INSTANCES_KEEP = 10;
+export const INSTANCES_KEEP = 30;
 export const INSTANCES_FETCH_TIMEOUT_MS = 30_000;
 
 // --- tolerant searx-stats2 parsing (ported from scripts/update-instances.mjs) ---
