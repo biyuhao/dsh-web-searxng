@@ -448,6 +448,8 @@ type RowProbe =
 /** Page-lifetime probe cache (URL + proxy ⇒ outcome). Survives picker reopen. */
 const rowProbeCache = new Map<string, RowProbe>()
 const rowProbeKey = (url: string, proxy: string): string => `${url}\n${proxy}`
+/** Stop auto-probing once this many rows are usable (rest stay queued). */
+const TARGET_USABLE = 10
 
 /** Date line prefers the refreshed cache; stale flag follows the active source. */
 function activeDateLabel(
@@ -504,11 +506,22 @@ function CommunityPicker(props: {
   // Silent auto-probe on open / proxy change / retest: sequential batch
   // chunks (≤12 targets each) for every uncached row. Unmount-safe via a
   // generation flag (late results still land in the page-lifetime cache).
+  // Silent auto-probe on open / proxy change / retest / refresh: sequential
+  // batch chunks (≤12 targets each) over uncached rows, in list order.
+  // Early stop: once TARGET_USABLE rows are usable, the rest stay queued
+  // (never marked testing, so no row pretends to be in flight). Unmount-safe
+  // via a generation flag (late results still land in the page cache).
   useEffect(() => {
     let cancelled = false
+    const usableCount = (): number => {
+      let n = 0
+      for (const i of list) {
+        if (rowProbeCache.get(rowProbeKey(i.url, proxyUrl))?.status === 'ok') n++
+      }
+      return n
+    }
     const pending = list.filter((i) => !rowProbeCache.has(rowProbeKey(i.url, proxyUrl)))
-    if (pending.length === 0) return () => {}
-    for (const i of pending) rowProbeCache.set(rowProbeKey(i.url, proxyUrl), { status: 'testing' })
+    if (pending.length === 0 || usableCount() >= TARGET_USABLE) return () => {}
     setProgress({ done: 0, total: pending.length })
     bump()
     const applyResults = (targets: { url: string }[], results: ProbeTargetResult[]): void => {
@@ -537,12 +550,16 @@ function CommunityPicker(props: {
       for (const t of targets) rowProbeCache.set(rowProbeKey(t.url, proxyUrl), { status: 'fail', note, severity })
     }
     // Sequential chunks of ≤12 (the round cap): rows resolve progressively
-    // and the ranking re-flows as each chunk lands.
+    // and the ranking re-flows as each chunk lands. Stops early once
+    // TARGET_USABLE rows are usable; the progress line then clears.
     const run = async (): Promise<void> => {
       const CHUNK = 12
       let done = 0
       for (let k = 0; k * CHUNK < pending.length && !cancelled; k++) {
+        if (usableCount() >= TARGET_USABLE) break
         const slice = pending.slice(k * CHUNK, (k + 1) * CHUNK)
+        for (const i of slice) rowProbeCache.set(rowProbeKey(i.url, proxyUrl), { status: 'testing' })
+        bump()
         try {
           const results = await controller.probeBatch(
             slice.map((i) => ({ url: i.url })),
@@ -559,6 +576,8 @@ function CommunityPicker(props: {
           bump()
         }
       }
+      // Clear the progress line on early stop (else "measured x/100" lingers).
+      if (!cancelled) setProgress({ done, total: done })
     }
     void run()
     return () => {
@@ -595,10 +614,12 @@ function CommunityPicker(props: {
   }
 
   const ranked = useMemo(() => {
+    // ok 0 · testing 1 · queued (never probed, e.g. after early stop) 2 · fail 3.
     const rankOf = (url: string): number => {
       const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
-      if (!p || p.status === 'testing') return 1
-      return p.status === 'ok' ? 0 : 2
+      if (!p) return 2
+      if (p.status === 'testing') return 1
+      return p.status === 'ok' ? 0 : 3
     }
     return [...list].sort((a, b) => {
       const ra = rankOf(a.url)
@@ -613,7 +634,7 @@ function CommunityPicker(props: {
       }
       // Failed rows: transient (429 / timeout / flaky gateway) above
       // persistent (403 JSON-disabled, bad URL, dead host).
-      if (ra === 2) {
+      if (ra === 3) {
         const pa = rowProbeCache.get(rowProbeKey(a.url, proxyUrl))
         const pb = rowProbeCache.get(rowProbeKey(b.url, proxyUrl))
         const sa = pa?.status === 'fail' && pa.severity === 'transient' ? 0 : 1
@@ -626,7 +647,8 @@ function CommunityPicker(props: {
   }, [snap, remote, proxyUrl, round, tick])
 
   const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
-    if (!p || p.status === 'testing') return { mark: '○', text: t('probeRowTesting'), failed: false }
+    if (!p) return { mark: '○', text: t('probeQueued'), failed: false }
+    if (p.status === 'testing') return { mark: '○', text: t('probeRowTesting'), failed: false }
     if (p.status === 'ok') {
       return {
         mark: '●',

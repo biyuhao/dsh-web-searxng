@@ -10,8 +10,8 @@
  *      parses tolerantly).
  *   2. Keep https instances whose checker status is up (or unknown when the
  *      checker exposes no status field at all), sort uptime desc, latency
- *      asc, keep the top 30 (deep enough that the card still finds usable
- *      ones when the first rows fail probing).
+ *      asc, keep the top 100 (deep pool: the card probes in order and stops
+ *      early once 10 usable rows are found).
  *   3. Write src/client/instances.snapshot.json — bundled into lib/client.js
  *      by esbuild, so the card works offline from the snapshot date.
  *
@@ -25,7 +25,7 @@
 
 const SOURCE = process.env.SEARXNG_SNAPSHOT_URL || 'https://searx.space/data/instances.json'
 const OUT = new URL('../src/client/instances.snapshot.json', import.meta.url)
-const KEEP = 30
+const KEEP = 100
 
 const STATUS_KEYS = ['status', 'state', 'up', 'online']
 const LATENCY_MS_KEYS = ['latencyMs', 'latency_ms']

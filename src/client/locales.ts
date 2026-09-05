@@ -54,6 +54,7 @@ export const en = {
   probeUnsupported: 'Host cannot test connections (update the plugin and retry).',
   probeTimeout: 'No answer — the host may predate connection testing (restart dsh web with the updated plugin).',
   probeRowTesting: 'testing…',
+  probeQueued: 'queued…',
   probeAutoNote: 'Auto-tested with the current proxy setting; failed entries stay selectable.',
 } as const
 
@@ -113,6 +114,7 @@ export const zh = {
   probeUnsupported: '宿主不支持连接测试（请更新插件后重试）。',
   probeTimeout: '无响应——宿主可能未更新（请用新版插件重启 dsh web）。',
   probeRowTesting: '测试中…',
+  probeQueued: '待测…',
   probeAutoNote: '已用当前代理设置自动测试；失败项仍可选用。',
 } as const
 
