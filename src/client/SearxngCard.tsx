@@ -19,6 +19,23 @@ function probeDisplay(t: (k: keyof typeof en) => string, err: string | undefined
   return err.length > 140 ? `${err.slice(0, 140)}…` : err
 }
 
+/** Failure severity for ranking failed rows: transient (retryable) floats up. */
+function failSeverityOfResult(error: string | undefined): 'transient' | 'persistent' {
+  if (!error) return 'persistent'
+  // 429 rate limit, probe timeout/abort, flaky gateways — worth retrying.
+  if (/429/.test(error)) return 'transient'
+  if (/abort/i.test(error) || /timeout/i.test(error)) return 'transient'
+  if (/HTTP 50[234]/.test(error)) return 'transient'
+  // 403 (JSON disabled), bad URL/proxy, dead hosts stay at the bottom.
+  return 'persistent'
+}
+
+/** Severity for transport-level chunk failures (no per-target result). */
+function failSeverityOfMessage(message: string): 'transient' | 'persistent' {
+  if (/timeout/.test(message)) return 'transient'
+  return 'persistent'
+}
+
 /** Map a thrown refresh error to display copy (mirrors probeNote). */
 function refreshNote(t: (k: keyof typeof en) => string, message: string): string {
   if (message.startsWith('refresh-unsupported')) return t('probeUnsupported')
@@ -426,7 +443,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
 type RowProbe =
   | { status: 'testing' }
   | { status: 'ok'; result: ProbeTargetResult }
-  | { status: 'fail'; note: string }
+  | { status: 'fail'; note: string; severity: 'transient' | 'persistent' }
 
 /** Page-lifetime probe cache (URL + proxy ⇒ outcome). Survives picker reopen. */
 const rowProbeCache = new Map<string, RowProbe>()
@@ -499,16 +516,24 @@ function CommunityPicker(props: {
         const key = rowProbeKey(item.url, proxyUrl)
         const result = byUrl.get(item.url)
         if (!result) {
-          rowProbeCache.set(key, { status: 'fail', note: probeNote(t, 'probe-round: missing result') })
+          rowProbeCache.set(key, {
+            status: 'fail',
+            note: probeNote(t, 'probe-round: missing result'),
+            severity: 'persistent',
+          })
         } else if (result.ok) {
           rowProbeCache.set(key, { status: 'ok', result })
         } else {
-          rowProbeCache.set(key, { status: 'fail', note: probeDisplay(t, result.error) })
+          rowProbeCache.set(key, {
+            status: 'fail',
+            note: probeDisplay(t, result.error),
+            severity: failSeverityOfResult(result.error),
+          })
         }
       }
     }
-    const markFailed = (targets: { url: string }[], note: string): void => {
-      for (const t of targets) rowProbeCache.set(rowProbeKey(t.url, proxyUrl), { status: 'fail', note })
+    const markFailed = (targets: { url: string }[], note: string, severity: 'transient' | 'persistent'): void => {
+      for (const t of targets) rowProbeCache.set(rowProbeKey(t.url, proxyUrl), { status: 'fail', note, severity })
     }
     // Sequential chunks of ≤12 (the round cap): rows resolve progressively
     // and the ranking re-flows as each chunk lands.
@@ -524,7 +549,8 @@ function CommunityPicker(props: {
           )
           applyResults(slice, results)
         } catch (err) {
-          markFailed(slice, probeNote(t, err instanceof Error ? err.message : String(err)))
+          const raw = err instanceof Error ? err.message : String(err)
+          markFailed(slice, probeNote(t, raw), failSeverityOfMessage(raw))
         }
         done += slice.length
         if (!cancelled) {
@@ -583,6 +609,15 @@ function CommunityPicker(props: {
         const la = pa?.status === 'ok' ? pa.result.latencyMs : Number.MAX_SAFE_INTEGER
         const lb = pb?.status === 'ok' ? pb.result.latencyMs : Number.MAX_SAFE_INTEGER
         if (la !== lb) return la - lb
+      }
+      // Failed rows: transient (429 / timeout / flaky gateway) above
+      // persistent (403 JSON-disabled, bad URL, dead host).
+      if (ra === 2) {
+        const pa = rowProbeCache.get(rowProbeKey(a.url, proxyUrl))
+        const pb = rowProbeCache.get(rowProbeKey(b.url, proxyUrl))
+        const sa = pa?.status === 'fail' && pa.severity === 'transient' ? 0 : 1
+        const sb = pb?.status === 'fail' && pb.severity === 'transient' ? 0 : 1
+        if (sa !== sb) return sa - sb
       }
       return (a.latencyMs ?? Number.MAX_SAFE_INTEGER) - (b.latencyMs ?? Number.MAX_SAFE_INTEGER)
     })
