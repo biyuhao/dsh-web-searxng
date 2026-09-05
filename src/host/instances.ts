@@ -158,6 +158,7 @@ function latencyFromStats2(info: Rec): number | null {
 export async function fetchCuratedInstances(
   proxyUrl: string,
   source: string = INSTANCES_SOURCE,
+  keep: number = INSTANCES_KEEP,
 ): Promise<CuratedInstance[]> {
   if (proxyUrl && !isValidProxyUrl(proxyUrl)) throw new Error("invalid-proxy");
   const ctrl = new AbortController();
@@ -197,7 +198,7 @@ export async function fetchCuratedInstances(
       if ((b.uptimePct ?? -1) !== (a.uptimePct ?? -1)) return (b.uptimePct ?? -1) - (a.uptimePct ?? -1);
       return (a.latencyMs ?? Infinity) - (b.latencyMs ?? Infinity);
     });
-    return out.slice(0, INSTANCES_KEEP);
+    return out.slice(0, Math.max(1, keep));
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw new Error("timeout");
     throw e instanceof Error ? e : new Error(String(e));
