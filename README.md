@@ -111,7 +111,7 @@ make smoke   # 直调 provider.search()（QUERY="..." 可换词，SEARXNG_PROXY_
 make update-instances  # 拉 searx.space 刷新卡片快照（需直连外网）
 ```
 
-注意：checker 数据不记录 `?format=json` 开关，社区实例挑好保存后务必 `make smoke` 自测。
+注意：卡片里的连接测试已是一次真实带 JSON 的搜索，标 ● 的行等于自动 smoke 过，不必再手动 `make smoke`（`make smoke` 留给仓库开发联调）。
 
 ## 本地开发
 
