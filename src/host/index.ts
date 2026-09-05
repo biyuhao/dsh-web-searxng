@@ -5,6 +5,7 @@ import type { SettingsProvider } from "@deepseek-ai/dsh-settings";
 import { SearxngSearchProvider } from "./provider.js";
 import type { SearxngOptions } from "./provider.js";
 import { installProbeSection } from "./probe.js";
+import { installInstancesSection } from "./instances.js";
 import {
   SearxngSettings,
   assertServiceable,
@@ -148,5 +149,8 @@ export function apply(ctx: Context, config: Config) {
     // Connectivity probe channel for the settings card (request/response
     // over the `searxng-probe` section — see probe.ts).
     installProbeSection(ctx, settingsCtx.settings);
+    // Community-list refresh channel (runtime cache over the
+    // `searxng-instances` section — see instances.ts).
+    installInstancesSection(ctx, settingsCtx.settings);
   });
 }

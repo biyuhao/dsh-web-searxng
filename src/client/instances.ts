@@ -1,7 +1,9 @@
 /**
  * Curated community-instance snapshot (searx.space) for the card picker.
  * Bundled into lib/client.js by esbuild — the card works offline from the
- * snapshot date. Refresh with `make update-instances` on a connected machine.
+ * snapshot date. Refresh from the card ("刷新列表", host fetches + caches
+ * into the `searxng-instances` section) or with `make update-instances`
+ * on a connected machine.
  */
 
 import raw from './instances.snapshot.json'

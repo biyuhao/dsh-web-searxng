@@ -71,6 +71,24 @@ export const PROBE_MAX_TARGETS = 12
 /** Round-trip wait before the card reports "no answer" (host fans out in parallel). */
 export const PROBE_ROUND_TIMEOUT_MS = 50_000
 
+/** Runtime community-list cache + refresh channel (see host instances.ts). */
+export const INSTANCES_NS = 'searxng-instances'
+/** Refresh wait (host fetches searx.space with a 30s cap, then curates). */
+export const INSTANCES_REFRESH_TIMEOUT_MS = 60_000
+
+export type RefreshedInstance = {
+  url: string
+  status: 'up' | 'unknown'
+  uptimePct: number | null
+  latencyMs: number | null
+  version: string | null
+}
+
+export type InstancesCache = {
+  instances: RefreshedInstance[]
+  fetchedAt: string
+}
+
 type Listener = () => void
 
 export function defaultConfig(): SearxngConfig {
@@ -272,5 +290,115 @@ export class SearxngController {
       this.probeScopeFailed = true
       throw new Error('probe-unsupported')
     }
+  }
+
+  private instancesScope?: any
+  private instancesScopeFailed = false
+
+  private ensureInstancesScope(): any {
+    if (this.instancesScope) return this.instancesScope
+    if (this.instancesScopeFailed || !this.settingsScope || typeof this.settingsScope.bind !== 'function') {
+      throw new Error('refresh-unsupported')
+    }
+    try {
+      this.instancesScope = this.settingsScope.bind({ namespace: INSTANCES_NS })
+      return this.instancesScope
+    } catch {
+      this.instancesScopeFailed = true
+      throw new Error('refresh-unsupported')
+    }
+  }
+
+  private readInstancesValue(): Record<string, unknown> | undefined {
+    let snap: unknown
+    try {
+      snap = this.ensureInstancesScope().getSnapshot()
+    } catch {
+      return undefined
+    }
+    const value = (snap as { value?: Record<string, unknown> })?.value
+    return value && typeof value === 'object' ? value : undefined
+  }
+
+  /** Read the cached community list without requesting a refresh (mount path). */
+  readInstancesCache(): InstancesCache | undefined {
+    const value = this.readInstancesValue()
+    if (!value || typeof value.instancesJson !== 'string' || typeof value.fetchedAt !== 'string') {
+      return undefined
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(value.instancesJson)
+    } catch {
+      return undefined
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0 || !value.fetchedAt) return undefined
+    return { instances: parsed as RefreshedInstance[], fetchedAt: value.fetchedAt }
+  }
+
+  /**
+   * Refresh the community list through the `searxng-instances` section:
+   * write the request (refreshRequestId LAST), wait for the host fetch.
+   * Old-host failures surface as `refresh-unsupported` / `refresh-timeout`;
+   * a failed fetch surfaces as `refresh: <reason>` and leaves the old
+   * cache (and the bundled snapshot) untouched.
+   */
+  async refreshInstances(opts?: { proxyUrl?: string }): Promise<InstancesCache> {
+    const scope = this.ensureInstancesScope()
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    try {
+      await scope.set('proxyUrl', opts?.proxyUrl ?? '')
+      await scope.set('refreshError', '')
+      await scope.set('refreshRequestId', requestId)
+    } catch {
+      throw new Error('refresh-unsupported')
+    }
+    return new Promise<InstancesCache>((resolve, reject) => {
+      let settled = false
+      const done = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.probeUnsubs.delete(unsub)
+        try {
+          unsub()
+        } catch {
+          /* ignore */
+        }
+        fn()
+      }
+      const timer = setTimeout(() => {
+        done(() => reject(new Error('refresh-timeout')))
+      }, INSTANCES_REFRESH_TIMEOUT_MS)
+      const check = (): void => {
+        const value = this.readInstancesValue()
+        if (!value || value.refreshResultId !== requestId) return
+        if (typeof value.refreshError === 'string' && value.refreshError) {
+          const msg = value.refreshError
+          done(() => reject(new Error(`refresh: ${msg}`)))
+          return
+        }
+        if (typeof value.instancesJson !== 'string' || typeof value.fetchedAt !== 'string') return
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(value.instancesJson)
+        } catch {
+          done(() => reject(new Error('refresh: malformed list')))
+          return
+        }
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          done(() => reject(new Error('refresh: empty list')))
+          return
+        }
+        const cache: InstancesCache = {
+          instances: parsed as RefreshedInstance[],
+          fetchedAt: value.fetchedAt,
+        }
+        done(() => resolve(cache))
+      }
+      const unsub = scope.subscribe(check)
+      this.probeUnsubs.add(unsub)
+      check()
+    })
   }
 }

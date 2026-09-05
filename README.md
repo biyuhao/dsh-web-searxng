@@ -108,7 +108,7 @@ curl -su dsh:你的密码 'https://search.example.com/search?q=searxng&format=js
 ```bash
 make probe   # curl 直测 ?format=json（需 SEARXNG_BASE_URL）
 make smoke   # 直调 provider.search()（QUERY="..." 可换词，SEARXNG_PROXY_URL 可选）
-make update-instances  # 拉 searx.space 刷新卡片快照（需直连外网）
+make update-instances  # 拉 searx.space 刷新内置快照（需直连外网；日常用卡片里的「刷新列表」一键刷新即可，会走当前代理并缓存）
 ```
 
 注意：卡片里的连接测试已是一次真实带 JSON 的搜索，标 ● 的行等于自动 smoke 过，不必再手动 `make smoke`（`make smoke` 留给仓库开发联调）。

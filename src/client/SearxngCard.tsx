@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
-import type { SearxngController, SearxngConfig, ProbeTarget, ProbeTargetResult } from './controller.js'
+import type { SearxngController, SearxngConfig, ProbeTarget, ProbeTargetResult, InstancesCache } from './controller.js'
 import { defaultConfig, validateConfig } from './controller.js'
-import { getSnapshot as getInstanceSnapshot, isSnapshotStale, snapshotLabel, instanceMeta } from './instances.js'
+import { getSnapshot as getInstanceSnapshot, snapshotLabel, instanceMeta } from './instances.js'
 import { en } from './locales.js'
 
 /**
@@ -17,6 +17,13 @@ function probeDisplay(t: (k: keyof typeof en) => string, err: string | undefined
   if (/HTTP 429/.test(err)) return t('probeReason429')
   if (/abort/i.test(err) || /timeout/i.test(err)) return t('probeReasonTimeout')
   return err.length > 140 ? `${err.slice(0, 140)}…` : err
+}
+
+/** Map a thrown refresh error to display copy (mirrors probeNote). */
+function refreshNote(t: (k: keyof typeof en) => string, message: string): string {
+  if (message.startsWith('refresh-unsupported')) return t('probeUnsupported')
+  if (message.startsWith('refresh-timeout')) return t('probeTimeout')
+  return probeDisplay(t, message.replace(/^refresh:\s*/, ''))
 }
 
 /** Map a thrown probe error (transport-level) to display copy. */
@@ -425,6 +432,26 @@ type RowProbe =
 const rowProbeCache = new Map<string, RowProbe>()
 const rowProbeKey = (url: string, proxy: string): string => `${url}\n${proxy}`
 
+/** Date line prefers the refreshed cache; stale flag follows the active source. */
+function activeDateLabel(
+  t: (k: keyof typeof en) => string,
+  bundledLabel: string | null,
+  fetchedAt: string | undefined,
+): string {
+  if (fetchedAt) {
+    const d = new Date(Date.parse(fetchedAt))
+    if (!Number.isNaN(d.getTime())) return t('communityFresh').replace('{date}', d.toLocaleDateString())
+  }
+  return bundledLabel ? t('communityFresh').replace('{date}', bundledLabel) : t('communityEmptyShort')
+}
+
+function isActiveStale(bundledAt: string | null, fetchedAt: string | undefined): boolean {
+  const src = fetchedAt ?? bundledAt ?? undefined
+  if (!src) return true
+  const v = Date.parse(src)
+  return Number.isNaN(v) || Date.now() - v > 30 * 24 * 3600 * 1000
+}
+
 function CommunityPicker(props: {
   t: (k: keyof typeof en) => string
   disabled: boolean
@@ -438,15 +465,30 @@ function CommunityPicker(props: {
   const [tick, setTick] = useState(0)
   const [round, setRound] = useState(0)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const [remote, setRemote] = useState<InstancesCache | null>(null)
+  const [refresh, setRefresh] = useState<{ status: 'idle' | 'working' | 'fail'; note?: string }>({ status: 'idle' })
   const bump = () => setTick((n) => n + 1)
-  const urlsKey = snap.instances.map((i) => i.url).join('\n')
+  // Runtime cache (one-click refresh) wins when newer than the bundle.
+  const list = remote?.instances ?? snap.instances
+  const urlsKey = list.map((i) => i.url).join('\n')
+
+  // Adopt the cached list on open when it is fresher than the bundle.
+  useEffect(() => {
+    const cache = controller.readInstancesCache()
+    if (!cache) return
+    const ft = Date.parse(cache.fetchedAt)
+    if (Number.isNaN(ft)) return
+    const bt = snap.updatedAt ? Date.parse(snap.updatedAt) : NaN
+    if (!snap.updatedAt || Number.isNaN(bt) || ft > bt) setRemote(cache)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Silent auto-probe on open / proxy change / retest: sequential batch
   // chunks (≤12 targets each) for every uncached row. Unmount-safe via a
   // generation flag (late results still land in the page-lifetime cache).
   useEffect(() => {
     let cancelled = false
-    const pending = snap.instances.filter((i) => !rowProbeCache.has(rowProbeKey(i.url, proxyUrl)))
+    const pending = list.filter((i) => !rowProbeCache.has(rowProbeKey(i.url, proxyUrl)))
     if (pending.length === 0) return () => {}
     for (const i of pending) rowProbeCache.set(rowProbeKey(i.url, proxyUrl), { status: 'testing' })
     setProgress({ done: 0, total: pending.length })
@@ -499,8 +541,30 @@ function CommunityPicker(props: {
   }, [urlsKey, proxyUrl, round])
 
   const retest = () => {
-    for (const i of snap.instances) rowProbeCache.delete(rowProbeKey(i.url, proxyUrl))
+    for (const i of list) rowProbeCache.delete(rowProbeKey(i.url, proxyUrl))
     setRound((n) => n + 1)
+  }
+
+  // One-click refresh: host fetches searx.space and caches the curated list.
+  // New rows auto-probe via the round bump; same-URL rows keep their status.
+  const doRefresh = () => {
+    if (refresh.status === 'working') return
+    setRefresh({ status: 'working' })
+    void controller
+      .refreshInstances({ ...(proxyUrl ? { proxyUrl } : {}) })
+      .then(
+        (cache) => {
+          setRemote(cache)
+          setRefresh({ status: 'idle' })
+          setRound((n) => n + 1)
+        },
+        (err) => {
+          setRefresh({
+            status: 'fail',
+            note: refreshNote(t, err instanceof Error ? err.message : String(err)),
+          })
+        },
+      )
   }
 
   const ranked = useMemo(() => {
@@ -509,7 +573,7 @@ function CommunityPicker(props: {
       if (!p || p.status === 'testing') return 1
       return p.status === 'ok' ? 0 : 2
     }
-    return [...snap.instances].sort((a, b) => {
+    return [...list].sort((a, b) => {
       const ra = rankOf(a.url)
       const rb = rankOf(b.url)
       if (ra !== rb) return ra - rb
@@ -523,7 +587,7 @@ function CommunityPicker(props: {
       return (a.latencyMs ?? Number.MAX_SAFE_INTEGER) - (b.latencyMs ?? Number.MAX_SAFE_INTEGER)
     })
     // `tick` re-runs the sort as silent probes settle (cache itself is not reactive).
-  }, [snap, proxyUrl, round, tick])
+  }, [snap, remote, proxyUrl, round, tick])
 
   const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {
     const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
@@ -547,7 +611,7 @@ function CommunityPicker(props: {
       {progress.total > 0 && progress.done < progress.total && (
         <div className="sx_hint">{t('probeProgress').replace('{done}', String(progress.done)).replace('{total}', String(progress.total))}</div>
       )}
-      {snap.instances.length === 0 && (
+      {list.length === 0 && (
         <div className="sx_hint">{t('communityEmpty')}</div>
       )}
       {ranked.map((i) => {
@@ -573,10 +637,20 @@ function CommunityPicker(props: {
         <button className="sx_btnSecondary" onClick={retest}>
           {t('retest')}
         </button>
+        <button
+          className="sx_btnSecondary"
+          onClick={doRefresh}
+          disabled={disabled || refresh.status === 'working'}
+        >
+          {refresh.status === 'working' ? t('refreshing') : t('refreshList')}
+        </button>
       </div>
+      {refresh.status === 'fail' && refresh.note && (
+        <div className="sx_error">{refresh.note}</div>
+      )}
       <div className="sx_hint">
-        {label ? t('communityFresh').replace('{date}', label) : t('communityEmptyShort')}
-        {isSnapshotStale() && snap.instances.length > 0 ? ` ${t('communityStale')}` : ''}
+        {activeDateLabel(t, label, remote?.fetchedAt)}
+        {isActiveStale(snap.updatedAt, remote?.fetchedAt) && list.length > 0 ? ` ${t('communityStale')}` : ''}
         {` ${t('communityJsonNote')}`}
       </div>
     </div>
