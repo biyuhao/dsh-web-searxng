@@ -17,3 +17,5 @@
         safesearch: 1
         # 出境代理（出境受限机器必填；settings 卡片同名字段覆盖它）：
         proxyUrl: !!js process.env.SEARXNG_PROXY_URL
+        # 代理启用开关（settings 卡片勾选框覆盖它；SEARXNG_PROXY_ENABLED=0/false/off 可默认关闭）：
+        proxyEnabled: true

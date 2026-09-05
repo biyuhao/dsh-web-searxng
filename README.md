@@ -3,7 +3,7 @@
 Self-hosted [SearXNG](https://docs.searxng.org/) as the `web_search` backend for DSH.
 给 DSH 接上自建 SearXNG 做 `web_search` 搜索后端（provider id: `searxng`）——不用把查询交给第三方搜索 API。
 
-- 🖥️ **设置页配置卡**：实例地址 / BasicAuth / 分类 / 语言 / 安全搜索 / 出境代理（http/https/socks5(h)），保存实时生效、无需重启
+- 🖥️ **设置页配置卡**：实例地址 / BasicAuth / 分类 / 语言 / 安全搜索 / 出境代理（http/https/socks5(h)，可开关），保存实时生效、无需重启
 - 🔌 **一键测试连接**：真搜一次，返回可用性 / 延迟 / 结果条数；失败是正常结果，直接显示原因（403 未开 JSON、429 限流、超时……）
 - 📋 **社区实例选择器**：没自建也能用，searx.space 百级候选池，打开自动测速、可用的先列出来（满 10 个就停）；临时故障（限流/超时）排在长期不可用（JSON 未开）前面
 - 🔄 **一键刷新名单**：走当前代理重拉 searx.space 并缓存，不用跑脚本
@@ -55,6 +55,7 @@ web_search({queries: ["searxng format=json"]})
 | `categories` / `language` | SearXNG 搜索参数 | `general` / `zh-CN` |
 | `safesearch` | `0` 关闭 / `1` 中等 / `2` 严格 | `1` |
 | `proxyUrl` | 出境代理，留空 = 直连；出境受限的机器必填 | `""` |
+| `proxyEnabled` | 代理启用开关（设置页勾选框）；关闭后走直连，地址保留 | `true` |
 
 ## 自建实例（`deploy/`）
 

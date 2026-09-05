@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
 import type { SearxngController, SearxngConfig, ProbeTarget, ProbeTargetResult, InstancesCache } from './controller.js'
-import { defaultConfig, validateConfig } from './controller.js'
+import { normalizeConfig, validateConfig } from './controller.js'
 import { getSnapshot as getInstanceSnapshot, snapshotLabel, instanceMeta } from './instances.js'
 import { en } from './locales.js'
 
@@ -176,10 +176,8 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     () => controller.getSnapshot(),
   )
 
-  const cfg: SearxngConfig = useMemo(
-    () => ({ ...defaultConfig(), ...(snap.value ?? {}) }),
-    [snap.value],
-  )
+  // Pre-switch settings docs lack proxyEnabled: normalize keeps the proxy active.
+  const cfg: SearxngConfig = useMemo(() => normalizeConfig(snap.value), [snap.value])
 
   const [draft, setDraft] = useState<SearxngConfig>(cfg)
   const [saving, setSaving] = useState(false)
@@ -212,6 +210,14 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     setDraft((d) => ({ ...d, [key]: key === 'safesearch' ? Number(v) : v }))
   }
 
+  const setBool = (key: 'proxyEnabled') => (e: { target: { checked: boolean } }) => {
+    setDraft((d) => ({ ...d, [key]: e.target.checked }))
+  }
+
+  // A disabled proxy stays in the draft as inert text: test, picker and
+  // refresh below all run direct while the URL is kept.
+  const effectiveProxy = draft.proxyEnabled === false ? '' : draft.proxyUrl.trim()
+
   const onSave = async () => {
     if (hasError || !snap.writable) return
     setSaving(true)
@@ -242,7 +248,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
       language: draft.language || 'zh-CN',
       safesearch: draft.safesearch,
     }
-    const proxy = draft.proxyUrl.trim()
+    const proxy = effectiveProxy
     try {
       const results = await controller.probeBatch([target], { ...(proxy ? { proxyUrl: proxy } : {}) })
       const result = results[0]
@@ -299,7 +305,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
           t={t}
           disabled={disabled}
           controller={controller}
-          proxyUrl={draft.proxyUrl.trim()}
+          proxyUrl={effectiveProxy}
           onPick={onPickInstance}
         />
       )}
@@ -405,17 +411,26 @@ export function SearxngCard({ controller, t: tProp }: Props) {
       </div>
 
       <div className="sx_field">
+        <label className="sx_label" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={draft.proxyEnabled !== false}
+            onChange={setBool('proxyEnabled')}
+            disabled={disabled}
+          />
+          {t('proxyEnabled')}
+        </label>
         <label className="sx_label">{t('proxyUrl')}</label>
         <input
           className={'sx_input' + (errors.proxyUrl ? ' sx_inputInvalid' : '')}
           value={draft.proxyUrl}
           placeholder={t('proxyUrlPlaceholder')}
           onChange={set('proxyUrl')}
-          disabled={disabled}
+          disabled={disabled || draft.proxyEnabled === false}
           autoComplete="off"
         />
         {errors.proxyUrl && <span className="sx_error">{t('invalidProxy')}</span>}
-        <span className="sx_hint">{t('proxyUrlNote')}</span>
+        <span className="sx_hint">{draft.proxyEnabled === false ? t('proxyDisabledNote') : t('proxyUrlNote')}</span>
       </div>
 
       <div className="sx_footer">

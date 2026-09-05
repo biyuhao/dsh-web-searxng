@@ -14,6 +14,8 @@ export type SearxngConfig = {
   language: string
   safesearch: number
   proxyUrl: string
+  /** false = keep proxyUrl but go direct. Old docs without it mean enabled. */
+  proxyEnabled: boolean
 }
 
 export const SEARXNG_FIELD_KEYS = [
@@ -24,6 +26,7 @@ export const SEARXNG_FIELD_KEYS = [
   'language',
   'safesearch',
   'proxyUrl',
+  'proxyEnabled',
 ] as const
 
 export type SearxngSnapshot = {
@@ -100,7 +103,13 @@ export function defaultConfig(): SearxngConfig {
     language: 'zh-CN',
     safesearch: 1,
     proxyUrl: '',
+    proxyEnabled: true,
   }
+}
+
+/** Merge a (possibly pre-switch) settings doc over defaults: missing proxyEnabled means enabled. */
+export function normalizeConfig(value: Partial<SearxngConfig> | undefined): SearxngConfig {
+  return { ...defaultConfig(), ...value, proxyEnabled: value?.proxyEnabled ?? true }
 }
 
 /** Local validation mirroring the host schema (fast feedback before save). */
@@ -108,7 +117,10 @@ export function validateConfig(cfg: SearxngConfig): Partial<Record<keyof Searxng
   const errors: Partial<Record<keyof SearxngConfig, string>> = {}
   if (cfg.baseURL !== '' && !canParseUrl(cfg.baseURL)) errors.baseURL = 'invalid-url'
   if (![0, 1, 2].includes(cfg.safesearch)) errors.safesearch = 'invalid-range'
-  if (cfg.proxyUrl !== '' && !isValidProxy(cfg.proxyUrl)) errors.proxyUrl = 'invalid-proxy'
+  // Disabled proxies are inert data: only validate the scheme while enabled.
+  if (cfg.proxyEnabled !== false && cfg.proxyUrl !== '' && !isValidProxy(cfg.proxyUrl)) {
+    errors.proxyUrl = 'invalid-proxy'
+  }
   return errors
 }
 

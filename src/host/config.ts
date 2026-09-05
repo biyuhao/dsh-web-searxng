@@ -30,6 +30,8 @@ export const SearxngSettingsSchema: any = z.object({
   safesearch: z.number().step(1).min(0).max(2),
   /** Egress proxy (http/https/socks5/socks5h). "" = direct. */
   proxyUrl: z.string(),
+  /** false = keep proxyUrl but go direct. Missing (pre-switch docs) = enabled. */
+  proxyEnabled: z.boolean(),
 });
 
 export interface SearxngSettings {
@@ -40,6 +42,7 @@ export interface SearxngSettings {
   language: string;
   safesearch: number;
   proxyUrl: string;
+  proxyEnabled: boolean;
 }
 
 export const SearxngSettings: any = SearxngSettingsSchema;
@@ -61,9 +64,17 @@ export function assertServiceable(config: SearxngSettings): void {
   if (![0, 1, 2].includes(config.safesearch)) {
     throw new Error(`searxng: safesearch must be 0, 1 or 2, got ${JSON.stringify(config.safesearch)}`);
   }
-  if (!isValidProxyUrl(config.proxyUrl ?? "")) {
+  // Disabled proxy rides along as inert data (still stored, never dialed),
+  // so only validate its scheme while enabled.
+  if ((config.proxyEnabled ?? true) && !isValidProxyUrl(config.proxyUrl ?? "")) {
     throw new Error(`searxng: proxyUrl scheme unsupported (http/https/socks5/socks5h): ${JSON.stringify((config.proxyUrl ?? "").slice(0, 80))}`);
   }
+}
+
+/** Effective egress proxy: "" = direct (disabled proxies are kept, not dialed). */
+export function effectiveProxyUrl(config: { proxyUrl?: string; proxyEnabled?: boolean }): string {
+  if (config.proxyEnabled === false) return "";
+  return config.proxyUrl ?? "";
 }
 
 /** baseURL with password redacted for host logs. */

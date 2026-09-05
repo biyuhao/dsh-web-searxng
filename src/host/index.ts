@@ -9,6 +9,7 @@ import { installInstancesSection } from "./instances.js";
 import {
   SearxngSettings,
   assertServiceable,
+  effectiveProxyUrl,
   redactBaseURL,
   redactProxyUrl,
   SEARXNG_DEFAULT_CATEGORIES,
@@ -38,6 +39,8 @@ export interface Config {
   safesearch?: number;
   /** 出境代理。回退 `$SEARXNG_PROXY_URL` → `$HTTPS_PROXY` → `$ALL_PROXY`。留空 = 直连。 */
   proxyUrl?: string;
+  /** false = 保留代理地址但直连。回退 `$SEARXNG_PROXY_ENABLED`，缺省启用。 */
+  proxyEnabled?: boolean;
 }
 
 export const Config: z<Config> = z.object({
@@ -48,10 +51,20 @@ export const Config: z<Config> = z.object({
   language: z.string(),
   safesearch: z.number().step(1).min(0).max(2),
   proxyUrl: z.string(),
+  proxyEnabled: z.boolean(),
 });
 
 /** settings namespace（与 client 卡片 key 一致） */
 const NS = "searxng" as const;
+
+/** 解析 SEARXNG_PROXY_ENABLED 之类的开关 env：0/false/no/off/disabled → false，其余非空 → true，缺省 undefined。 */
+function parseEnabledFlag(raw: string | undefined): boolean | undefined {
+  if (raw === undefined) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === "") return undefined;
+  if (["0", "false", "no", "off", "disabled", "disable"].includes(v)) return false;
+  return true;
+}
 
 export function apply(ctx: Context, config: Config) {
   const env = launchEnvironmentOf(ctx);
@@ -66,6 +79,7 @@ export function apply(ctx: Context, config: Config) {
     envStr("SEARXNG_PROXY_URL") ??
     envStr("HTTPS_PROXY") ?? envStr("https_proxy") ??
     envStr("ALL_PROXY") ?? envStr("all_proxy");
+  const proxyEnabledFromEnv = parseEnabledFlag(envStr("SEARXNG_PROXY_ENABLED"));
   let normalizedEntry: SettingsType;
   try {
     normalizedEntry = {
@@ -76,6 +90,7 @@ export function apply(ctx: Context, config: Config) {
       language: config.language ?? SEARXNG_DEFAULT_LANGUAGE,
       safesearch: config.safesearch ?? SEARXNG_DEFAULT_SAFESEARCH,
       proxyUrl: config.proxyUrl ?? proxyFromEnv ?? "",
+      proxyEnabled: config.proxyEnabled ?? proxyEnabledFromEnv ?? true,
     };
     assertServiceable(normalizedEntry);
   } catch (err) {
@@ -88,6 +103,7 @@ export function apply(ctx: Context, config: Config) {
       language: SEARXNG_DEFAULT_LANGUAGE,
       safesearch: SEARXNG_DEFAULT_SAFESEARCH,
       proxyUrl: "",
+      proxyEnabled: true,
     };
   }
 
@@ -102,6 +118,8 @@ export function apply(ctx: Context, config: Config) {
     liveOpts.language = s.language;
     liveOpts.safesearch = s.safesearch;
     liveOpts.proxyUrl = s.proxyUrl;
+    // 老 settings 文档没有该字段时保持启用（沿用旧行为：有地址就走代理）。
+    liveOpts.proxyEnabled = (s as Partial<SettingsType>).proxyEnabled ?? true;
   };
 
   // Authoritative source：settings 层 attach 前是 entry，之后是 resolved scope。
@@ -134,7 +152,8 @@ export function apply(ctx: Context, config: Config) {
               `[searxng] config applied: baseURL=${cfg.baseURL ? redactBaseURL(cfg.baseURL) : "(unconfigured)"} ` +
                 `auth=${cfg.username ? "basic" : "none"} categories=${cfg.categories} ` +
                 `language=${cfg.language} safesearch=${cfg.safesearch} ` +
-                `proxy=${cfg.proxyUrl ? redactProxyUrl(cfg.proxyUrl) : "direct"}`,
+                `proxy=${effectiveProxyUrl(cfg) ? redactProxyUrl(effectiveProxyUrl(cfg)) : "direct"}` +
+                `${cfg.proxyUrl && !effectiveProxyUrl(cfg) ? " (disabled, kept)" : ""}`,
             );
           } catch (err) {
             ctx.logger.warn(`[searxng] settings change rejected: ${String(err)}`);

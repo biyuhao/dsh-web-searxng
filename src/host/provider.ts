@@ -10,6 +10,7 @@ import {
   isValidProxyUrl,
   socksDependencyAvailable,
 } from "./dispatcher.js";
+import { effectiveProxyUrl } from "./config.js";
 import { fetch as undiciFetch } from "undici";
 
 export interface SearxngOptions {
@@ -21,6 +22,8 @@ export interface SearxngOptions {
   safesearch?: number;
   /** 出境代理（http/https/socks5/socks5h），"" = 直连。GFW 后机器必配。 */
   proxyUrl?: string;
+  /** false = 保留 proxyUrl 但直连；undefined（老配置）= 启用。 */
+  proxyEnabled?: boolean;
 }
 
 interface SearxngResultJson {
@@ -69,9 +72,10 @@ export class SearxngSearchProvider implements WebSearchProvider {
   available(): boolean {
     if ((this.opts.baseURL?.length ?? 0) === 0 || !URL.canParse(this.opts.baseURL)) return false;
     if (this.opts.safesearch !== undefined && ![0, 1, 2].includes(this.opts.safesearch)) return false;
-    if (this.opts.proxyUrl !== undefined && !isValidProxyUrl(this.opts.proxyUrl)) return false;
+    const proxy = effectiveProxyUrl(this.opts);
+    if (proxy !== "" && !isValidProxyUrl(proxy)) return false;
     // socks 依赖缺失时提前不可用（host 日志给安装指引，而非首搜才炸）。
-    if (this.opts.proxyUrl && isSocksScheme(this.opts.proxyUrl) && !socksDependencyAvailable()) return false;
+    if (proxy && isSocksScheme(proxy) && !socksDependencyAvailable()) return false;
     return true;
   }
 
@@ -102,15 +106,16 @@ export class SearxngSearchProvider implements WebSearchProvider {
     }
 
     let res: Response;
+    const proxy = effectiveProxyUrl(this.opts);
     try {
-      if (this.opts.proxyUrl) {
+      if (proxy) {
         // 代理走 undici 自家 fetch + 同版本 Dispatcher：全局 fetch（Node 26 内核
         // undici 7）不认 undici 6 的 Dispatcher（"invalid onError method"）。
         res = (await undiciFetch(url, {
           headers,
           redirect: "error",
           ...(signal ? { signal } : {}),
-          dispatcher: getOrCreateDispatcher(this.opts.proxyUrl) as never,
+          dispatcher: getOrCreateDispatcher(proxy) as never,
         })) as unknown as Response;
       } else {
         res = await fetch(url, { headers, redirect: "error", ...(signal ? { signal } : {}) });
