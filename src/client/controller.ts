@@ -1,6 +1,6 @@
 /**
  * Client controller for the searxng settings card.
- * Binds to the `searxng` namespace via ctx.settingsScope and exposes
+ * Binds to the `searxng` namespace via ctx.configForms and exposes
  * a small observable store for the card.
  */
 
@@ -153,7 +153,7 @@ export class SearxngController {
 
   constructor(
     private readonly scope: SettingsScope<SearxngConfig>,
-    private readonly settingsScope?: any,
+    private readonly configForms?: any,
   ) {}
 
   bind(): void {
@@ -292,11 +292,11 @@ export class SearxngController {
 
   private ensureProbeScope(): any {
     if (this.probeScope) return this.probeScope
-    if (this.probeScopeFailed || !this.settingsScope || typeof this.settingsScope.bind !== 'function') {
+    if (this.probeScopeFailed || !this.configForms || typeof this.configForms.get !== 'function') {
       throw new Error('probe-unsupported')
     }
     try {
-      this.probeScope = this.settingsScope.bind({ namespace: PROBE_NS })
+      this.probeScope = this.configForms.get(PROBE_NS)
       return this.probeScope
     } catch {
       this.probeScopeFailed = true
@@ -309,11 +309,11 @@ export class SearxngController {
 
   private ensureInstancesScope(): any {
     if (this.instancesScope) return this.instancesScope
-    if (this.instancesScopeFailed || !this.settingsScope || typeof this.settingsScope.bind !== 'function') {
+    if (this.instancesScopeFailed || !this.configForms || typeof this.configForms.get !== 'function') {
       throw new Error('refresh-unsupported')
     }
     try {
-      this.instancesScope = this.settingsScope.bind({ namespace: INSTANCES_NS })
+      this.instancesScope = this.configForms.get(INSTANCES_NS)
       return this.instancesScope
     } catch {
       this.instancesScopeFailed = true
