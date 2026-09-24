@@ -5,10 +5,7 @@ import { normalizeConfig, validateConfig } from './controller.js'
 import { getSnapshot as getInstanceSnapshot, snapshotLabel, instanceMeta } from './instances.js'
 import { en } from './locales.js'
 
-/**
- * Short human-readable probe failure. Known host codes map to locale copy;
- * anything else is the raw provider error, truncated.
- */
+/** Map a probe error to display text. */
 function probeDisplay(t: (k: keyof typeof en) => string, err: string | undefined): string {
   if (!err) return ''
   if (err === 'invalid-url') return t('invalidURL')
@@ -19,31 +16,31 @@ function probeDisplay(t: (k: keyof typeof en) => string, err: string | undefined
   return err.length > 140 ? `${err.slice(0, 140)}…` : err
 }
 
-/** Failure severity for ranking failed rows: transient (retryable) floats up. */
+/** Rank failed rows: transient first. */
 function failSeverityOfResult(error: string | undefined): 'transient' | 'persistent' {
   if (!error) return 'persistent'
-  // 429 rate limit, probe timeout/abort, flaky gateways — worth retrying.
+  // Retry rate limits, timeouts, and flaky gateways.
   if (/429/.test(error)) return 'transient'
   if (/abort/i.test(error) || /timeout/i.test(error)) return 'transient'
   if (/HTTP 50[234]/.test(error)) return 'transient'
-  // 403 (JSON disabled), bad URL/proxy, dead hosts stay at the bottom.
+  // Keep 403, bad URLs, and dead hosts last.
   return 'persistent'
 }
 
-/** Severity for transport-level chunk failures (no per-target result). */
+/** Transport failure severity. */
 function failSeverityOfMessage(message: string): 'transient' | 'persistent' {
   if (/timeout/.test(message)) return 'transient'
   return 'persistent'
 }
 
-/** Map a thrown refresh error to display copy (mirrors probeNote). */
+/** Map refresh errors to display text. */
 function refreshNote(t: (k: keyof typeof en) => string, message: string): string {
   if (message.startsWith('refresh-unsupported')) return t('probeUnsupported')
   if (message.startsWith('refresh-timeout')) return t('probeTimeout')
   return probeDisplay(t, message.replace(/^refresh:\s*/, ''))
 }
 
-/** Map a thrown probe error (transport-level) to display copy. */
+/** Map probe errors to display text. */
 function probeNote(t: (k: keyof typeof en) => string, message: string): string {
   if (message.startsWith('probe-unsupported')) return t('probeUnsupported')
   if (message.startsWith('probe-timeout')) return t('probeTimeout')
@@ -56,11 +53,7 @@ type ManualProbe =
   | { status: 'ok'; result: ProbeTargetResult }
   | { status: 'fail'; result?: ProbeTargetResult; note: string }
 
-// ---------------------------------------------------------------------------
-// Token-based styling mirroring ui-settings-models / ui-settings-plugins so
-// the card feels native in both themes. Single <style> tag keyed by plugin
-// id (idempotent across HMR).
-// ---------------------------------------------------------------------------
+// Shared card styles, inserted once per plugin.
 const SX_CSS = `
 .sx_input,.sx_select{
   box-sizing:border-box;
@@ -176,7 +169,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     () => controller.getSnapshot(),
   )
 
-  // Pre-switch settings docs lack proxyEnabled: normalize keeps the proxy active.
+  // Missing proxyEnabled means enabled.
   const cfg: SearxngConfig = useMemo(() => normalizeConfig(snap.value), [snap.value])
 
   const [draft, setDraft] = useState<SearxngConfig>(cfg)
@@ -187,8 +180,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(cfg), [draft, cfg])
 
-  // Sync remote → draft only while the user has NO local edits, so the
-  // intermediate snapshots of a save's field writes never clobber editing.
+  // Sync remote values only when the draft is clean.
   useEffect(() => {
     if (!dirty) setDraft(cfg)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -214,8 +206,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     setDraft((d) => ({ ...d, [key]: e.target.checked }))
   }
 
-  // A disabled proxy stays in the draft as inert text: test, picker and
-  // refresh below all run direct while the URL is kept.
+  // Disabled proxies stay in the draft but run direct.
   const effectiveProxy = draft.proxyEnabled === false ? '' : draft.proxyUrl.trim()
 
   const onSave = async () => {
@@ -232,9 +223,7 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     }
   }
 
-  // Manual probe of the staged draft (baseURL + auth + proxy as typed).
-  // Guarded against double-clicks; a finished probe never throws for
-  // instance-side failures — those arrive as `{ ok: false }`.
+  // Probe the staged draft; instance failures are returned as results.
   const onTestConnection = async () => {
     if (disabled || manualProbe.status === 'testing') return
     const baseURL = draft.baseURL.trim()
@@ -274,7 +263,6 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     return (
       <div className="sx_card">
         <span className="sx_error">{t('unavailable')}</span>
-        {snap.error && <span className="sx_hint">{snap.error}</span>}
       </div>
     )
   }
@@ -443,30 +431,19 @@ export function SearxngCard({ controller, t: tProp }: Props) {
   )
 }
 
-/**
- * Community instance picker over the bundled searx.space snapshot.
- * Picking only stages the URL into the draft — the user still saves.
- *
- * On open, every listed instance is silently probed through the host in ONE
- * settings round-trip (one real search each, current draft proxy, no auth)
- * and rows are ranked reachable-first by latency; failures stay selectable
- * but dimmed with their reason. Results are cached per URL+proxy for the
- * page lifetime — `retest` clears the cache and probes again. A positive
- * probe also verifies `?format=json`, which the checker metadata never
- * records.
- */
+/** Host-probed community instance picker. */
 type RowProbe =
   | { status: 'testing' }
   | { status: 'ok'; result: ProbeTargetResult }
   | { status: 'fail'; note: string; severity: 'transient' | 'persistent' }
 
-/** Page-lifetime probe cache (URL + proxy ⇒ outcome). Survives picker reopen. */
+/** Picker probe cache. */
 const rowProbeCache = new Map<string, RowProbe>()
 const rowProbeKey = (url: string, proxy: string): string => `${url}\n${proxy}`
-/** Stop auto-probing once this many rows are usable (rest stay queued). */
+/** Stop after this many usable rows. */
 const TARGET_USABLE = 10
 
-/** Date line prefers the refreshed cache; stale flag follows the active source. */
+/** Date label for the active list. */
 function activeDateLabel(
   t: (k: keyof typeof en) => string,
   bundledLabel: string | null,
@@ -503,11 +480,11 @@ function CommunityPicker(props: {
   const [refresh, setRefresh] = useState<{ status: 'idle' | 'working' | 'fail'; note?: string }>({ status: 'idle' })
   const [onlyUsable, setOnlyUsable] = useState(true)
   const bump = () => setTick((n) => n + 1)
-  // Runtime cache (one-click refresh) wins when newer than the bundle.
+  // Prefer newer runtime data.
   const list = remote?.instances ?? snap.instances
   const urlsKey = list.map((i) => i.url).join('\n')
 
-  // Adopt the cached list on open when it is fresher than the bundle.
+  // Load newer cached data on open.
   useEffect(() => {
     const cache = controller.readInstancesCache()
     if (!cache) return
@@ -518,14 +495,7 @@ function CommunityPicker(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Silent auto-probe on open / proxy change / retest: sequential batch
-  // chunks (≤12 targets each) for every uncached row. Unmount-safe via a
-  // generation flag (late results still land in the page-lifetime cache).
-  // Silent auto-probe on open / proxy change / retest / refresh: sequential
-  // batch chunks (≤12 targets each) over uncached rows, in list order.
-  // Early stop: once TARGET_USABLE rows are usable, the rest stay queued
-  // (never marked testing, so no row pretends to be in flight). Unmount-safe
-  // via a generation flag (late results still land in the page cache).
+  // Probe uncached rows in batches; stop after enough usable results.
   useEffect(() => {
     let cancelled = false
     const usableCount = (): number => {
@@ -564,9 +534,7 @@ function CommunityPicker(props: {
     const markFailed = (targets: { url: string }[], note: string, severity: 'transient' | 'persistent'): void => {
       for (const t of targets) rowProbeCache.set(rowProbeKey(t.url, proxyUrl), { status: 'fail', note, severity })
     }
-    // Sequential chunks of ≤12 (the round cap): rows resolve progressively
-    // and the ranking re-flows as each chunk lands. Stops early once
-    // TARGET_USABLE rows are usable; the progress line then clears.
+    // Run chunks of at most 12.
     const run = async (): Promise<void> => {
       const CHUNK = 12
       let done = 0
@@ -591,7 +559,7 @@ function CommunityPicker(props: {
           bump()
         }
       }
-      // Clear the progress line on early stop (else "measured x/100" lingers).
+      // Clear early-stop progress.
       if (!cancelled) setProgress({ done, total: done })
     }
     void run()
@@ -606,8 +574,7 @@ function CommunityPicker(props: {
     setRound((n) => n + 1)
   }
 
-  // One-click refresh: host fetches searx.space and caches the curated list.
-  // New rows auto-probe via the round bump; same-URL rows keep their status.
+  // Refresh the list and probe new rows.
   const doRefresh = () => {
     if (refresh.status === 'working') return
     setRefresh({ status: 'working' })
@@ -629,7 +596,7 @@ function CommunityPicker(props: {
   }
 
   const ranked = useMemo(() => {
-    // ok 0 · testing 1 · queued (never probed, e.g. after early stop) 2 · fail 3.
+    // ok, testing, queued, failed.
     const rankOf = (url: string): number => {
       const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
       if (!p) return 2
@@ -647,8 +614,7 @@ function CommunityPicker(props: {
         const lb = pb?.status === 'ok' ? pb.result.latencyMs : Number.MAX_SAFE_INTEGER
         if (la !== lb) return la - lb
       }
-      // Failed rows: transient (429 / timeout / flaky gateway) above
-      // persistent (403 JSON-disabled, bad URL, dead host).
+      // Transient failures rank above persistent failures.
       if (ra === 3) {
         const pa = rowProbeCache.get(rowProbeKey(a.url, proxyUrl))
         const pb = rowProbeCache.get(rowProbeKey(b.url, proxyUrl))
@@ -658,10 +624,11 @@ function CommunityPicker(props: {
       }
       return (a.latencyMs ?? Number.MAX_SAFE_INTEGER) - (b.latencyMs ?? Number.MAX_SAFE_INTEGER)
     })
-    // `tick` re-runs the sort as silent probes settle (cache itself is not reactive).
+    // Re-sort as probe results arrive.
   }, [snap, remote, proxyUrl, round, tick])
 
-  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
+  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {
+    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
     if (!p) return { mark: '○', text: t('probeQueued'), failed: false }
     if (p.status === 'testing') return { mark: '○', text: t('probeRowTesting'), failed: false }
     if (p.status === 'ok') {
@@ -676,8 +643,7 @@ function CommunityPicker(props: {
     return { mark: '✕', text: p.note, failed: true }
   }
 
-  // "Only usable" (default): rows appear as they pass probing; uncheck to
-  // inspect rows that were probed but failed (with reasons).
+  // Show only usable rows by default.
   const displayed = onlyUsable
     ? ranked.filter((i) => rowProbeCache.get(rowProbeKey(i.url, proxyUrl))?.status === 'ok')
     : ranked

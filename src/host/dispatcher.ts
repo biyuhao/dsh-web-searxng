@@ -1,23 +1,13 @@
-/**
- * Dispatcher factory: proxyUrl -> undici Dispatcher.
- * One instance per proxyUrl (connection pooling), lazy-created.
- *
- * http(s) proxies use undici's native ProxyAgent.
- * socks5/socks5h proxies need a bespoke undici Dispatcher: undici's fetch
- * "dispatcher" option requires an undici Dispatcher (ProxyAgent only accepts
- * http(s) URLs), so we build an undici Agent whose `connect` tunnels the TCP
- * socket through the socks server (TLS-wrapped for https targets).
- *
- * Ported from dsh-plugin-model-proxy/src/host/dispatcher.ts.
- */
+/** Cached undici dispatchers for HTTP(S) and SOCKS proxies. */
 
 import { ProxyAgent, Agent } from "undici";
 import { createRequire } from "node:module";
+import { isIP } from "node:net";
 import tls from "node:tls";
 
 const cache = new Map<string, unknown>();
 
-/** IANA-assigned default port for SOCKS when the proxy URL omits one. */
+/** SOCKS default port. */
 const DEFAULT_SOCKS_PORT = 1080;
 
 export const PROXY_POOL_DEFAULTS = {
@@ -42,7 +32,7 @@ function defaultPortFor(protocol: string): number {
   return 443;
 }
 
-/** Lazily require the `socks` dependency; throws with install guidance. */
+/** Lazy socks client loader. */
 function loadSocksClient(): { createConnection(opts: unknown): Promise<{ socket: import("net").Socket }> } {
   try {
     const require = createRequire(import.meta.url);
@@ -61,7 +51,7 @@ function loadSocksClient(): { createConnection(opts: unknown): Promise<{ socket:
 
 let socksProbe: boolean | undefined;
 
-/** Cheap availability probe for the `socks` dependency, memoized. */
+/** Memoized socks availability check. */
 export function socksDependencyAvailable(): boolean {
   if (socksProbe === undefined) {
     try {
@@ -74,7 +64,7 @@ export function socksDependencyAvailable(): boolean {
   return socksProbe;
 }
 
-/** Build an undici Dispatcher tunnelled through a socks proxy. */
+/** Build a SOCKS dispatcher. */
 function createSocksDispatcher(proxyUrl: string): unknown {
   const SocksClient = loadSocksClient();
 
@@ -95,12 +85,11 @@ function createSocksDispatcher(proxyUrl: string): unknown {
 
     const finishRaw = (raw: import("net").Socket) => {
       if (opts.protocol === "https:" || port === 443) {
-        const secure = tls.connect({
-          socket: raw,
-          servername: opts.servername ?? host,
-          host,
-          port,
-        });
+        // Do not put an IP literal in SNI.
+        const servername = opts.servername ?? host;
+        const tlsOpts: import("tls").ConnectionOptions = { socket: raw, host, port };
+        if (servername && !isIP(servername)) tlsOpts.servername = servername;
+        const secure = tls.connect(tlsOpts);
         secure.once("secureConnect", () => callback(null, secure));
         secure.once("error", (err) => callback(err));
       } else {
@@ -120,7 +109,7 @@ function createSocksDispatcher(proxyUrl: string): unknown {
   return new Agent({ ...PROXY_POOL_DEFAULTS, connect: connectThroughSocks as never });
 }
 
-/** A proxy URL may be reused by many searches; cache one Dispatcher per URL. */
+/** Cached dispatcher per proxy URL. */
 export function getOrCreateDispatcher(proxyUrl: string): unknown {
   const cached = cache.get(proxyUrl);
   if (cached) return cached;
@@ -145,7 +134,7 @@ export function getOrCreateDispatcher(proxyUrl: string): unknown {
   return d;
 }
 
-/** Retire cached dispatchers (test seam / config teardown). */
+/** Clear cached dispatchers. */
 export function clearDispatcherCache(proxyUrl?: string): number {
   const keys = proxyUrl !== undefined ? [proxyUrl] : [...cache.keys()];
   let removed = 0;

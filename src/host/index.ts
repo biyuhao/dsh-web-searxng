@@ -1,13 +1,12 @@
 import type { Context } from "@deepseek-ai/cordis";
-import z from "@deepseek-ai/schemastery";
+// Loader event types.
+import type {} from "@deepseek-ai/cordis-plugin-loader";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
-import type { SettingsProvider } from "@deepseek-ai/dsh-settings";
 import { SearxngSearchProvider } from "./provider.js";
 import type { SearxngOptions } from "./provider.js";
-import { installProbeSection } from "./probe.js";
-import { installInstancesSection } from "./instances.js";
+import { runProbeRound } from "./probe.js";
+import { runRefreshRound } from "./instances.js";
 import {
-  SearxngSettings,
   assertServiceable,
   effectiveProxyUrl,
   redactBaseURL,
@@ -15,49 +14,23 @@ import {
   SEARXNG_DEFAULT_CATEGORIES,
   SEARXNG_DEFAULT_LANGUAGE,
   SEARXNG_DEFAULT_SAFESEARCH,
-  type SearxngSettings as SettingsType,
+  type SearxngConfigRef,
+  type SearxngBase,
 } from "./config.js";
 
-/** Cordis 插件名（loader 诊断用） */
+/** Plugin name. */
 export const name = "web-searxng";
-/** 注入 ctx.web 缝合服务（settings 走 ctx.inject 可选接入，缺席不影响搜索） */
+/** Injected web service. */
 export const inject = ["web"];
+export { Config } from "./config.js";
 
-/** 插件配置（全可选 —— apply 内用 env / 常量回填，与 exa 插件一致） */
-export interface Config {
-  /** SearXNG 实例地址。回退到 `$SEARXNG_BASE_URL`。为空 → provider 不可用。 */
-  baseURL?: string;
-  /** Caddy BasicAuth 用户名。回退到 `$SEARXNG_USERNAME`。留空 = 无鉴权（公用实例）。 */
-  username?: string;
-  /** Caddy BasicAuth 密码。回退到 `$SEARXNG_PASSWORD`。 */
-  password?: string;
-  /** SearXNG categories 参数。默认 `general`。 */
-  categories?: string;
-  /** SearXNG language 参数。默认 `zh-CN`。 */
-  language?: string;
-  /** SearXNG safesearch 参数（0/1/2）。默认 `1`。 */
-  safesearch?: number;
-  /** 出境代理。回退 `$SEARXNG_PROXY_URL` → `$HTTPS_PROXY` → `$ALL_PROXY`。留空 = 直连。 */
-  proxyUrl?: string;
-  /** false = 保留代理地址但直连。回退 `$SEARXNG_PROXY_ENABLED`，缺省启用。 */
-  proxyEnabled?: boolean;
-}
-
-export const Config: z<Config> = z.object({
-  baseURL: z.string(),
-  username: z.string(),
-  password: z.string(),
-  categories: z.string(),
-  language: z.string(),
-  safesearch: z.number().step(1).min(0).max(2),
-  proxyUrl: z.string(),
-  proxyEnabled: z.boolean(),
-});
-
-/** settings namespace（与 client 卡片 key 一致） */
+/** Settings namespace. */
 const NS = "searxng" as const;
 
-/** 解析 SEARXNG_PROXY_ENABLED 之类的开关 env：0/false/no/off/disabled → false，其余非空 → true，缺省 undefined。 */
+/** Optional settings write-back face. */
+type SettingsFace = { update?: (ns: string, patch: object) => Promise<unknown> };
+
+/** Parse a boolean environment flag. */
 function parseEnabledFlag(raw: string | undefined): boolean | undefined {
   if (raw === undefined) return undefined;
   const v = raw.trim().toLowerCase();
@@ -66,110 +39,129 @@ function parseEnabledFlag(raw: string | undefined): boolean | undefined {
   return true;
 }
 
-export function apply(ctx: Context, config: Config) {
+export function apply(ctx: Context, config: SearxngConfigRef) {
   const env = launchEnvironmentOf(ctx);
   const envStr = (key: string): string | undefined => {
     const v = env.get(key)?.value;
     return typeof v === "string" ? v : undefined;
   };
 
-  // Composition entry → settings base：全字段归一化，bare {} 可用。
-  // 代理 env 链：显式 SEARXNG_PROXY_URL 优先，其次通用 HTTPS_PROXY / ALL_PROXY。
+  // Loader values fall back to environment variables.
   const proxyFromEnv =
     envStr("SEARXNG_PROXY_URL") ??
     envStr("HTTPS_PROXY") ?? envStr("https_proxy") ??
     envStr("ALL_PROXY") ?? envStr("all_proxy");
   const proxyEnabledFromEnv = parseEnabledFlag(envStr("SEARXNG_PROXY_ENABLED"));
-  let normalizedEntry: SettingsType;
+  const current = (): SearxngBase => ({
+    baseURL: config.baseURL.get() || envStr("SEARXNG_BASE_URL") || "",
+    username: config.username.get() || envStr("SEARXNG_USERNAME") || "",
+    password: config.password.get() || envStr("SEARXNG_PASSWORD") || "",
+    categories: config.categories.get() || SEARXNG_DEFAULT_CATEGORIES,
+    language: config.language.get() || SEARXNG_DEFAULT_LANGUAGE,
+    safesearch: config.safesearch.get() ?? SEARXNG_DEFAULT_SAFESEARCH,
+    proxyUrl: config.proxyUrl.get() || proxyFromEnv || "",
+    proxyEnabled: config.proxyEnabled.get() ?? proxyEnabledFromEnv ?? true,
+  });
+
+  // Validate at startup; bad values fail per request.
   try {
-    normalizedEntry = {
-      baseURL: config.baseURL ?? envStr("SEARXNG_BASE_URL") ?? "",
-      username: config.username ?? envStr("SEARXNG_USERNAME") ?? "",
-      password: config.password ?? envStr("SEARXNG_PASSWORD") ?? "",
-      categories: config.categories ?? SEARXNG_DEFAULT_CATEGORIES,
-      language: config.language ?? SEARXNG_DEFAULT_LANGUAGE,
-      safesearch: config.safesearch ?? SEARXNG_DEFAULT_SAFESEARCH,
-      proxyUrl: config.proxyUrl ?? proxyFromEnv ?? "",
-      proxyEnabled: config.proxyEnabled ?? proxyEnabledFromEnv ?? true,
-    };
-    assertServiceable(normalizedEntry);
+    assertServiceable(current());
   } catch (err) {
     ctx.logger.warn(`[searxng] composition config invalid: ${String(err)}`);
-    normalizedEntry = {
-      baseURL: "",
-      username: "",
-      password: "",
-      categories: SEARXNG_DEFAULT_CATEGORIES,
-      language: SEARXNG_DEFAULT_LANGUAGE,
-      safesearch: SEARXNG_DEFAULT_SAFESEARCH,
-      proxyUrl: "",
-      proxyEnabled: true,
-    };
   }
 
-  // Live provider opts：provider 每次 search 按需读取，onChange 原地更新即可，
-  // 无需 dispose + 重注册。
-  const liveOpts: SearxngOptions = { ...normalizedEntry };
-  const syncLiveOpts = (s: SettingsType): void => {
-    liveOpts.baseURL = s.baseURL;
-    liveOpts.username = s.username;
-    liveOpts.password = s.password;
-    liveOpts.categories = s.categories;
-    liveOpts.language = s.language;
-    liveOpts.safesearch = s.safesearch;
-    liveOpts.proxyUrl = s.proxyUrl;
-    // 老 settings 文档没有该字段时保持启用（沿用旧行为：有地址就走代理）。
-    liveOpts.proxyEnabled = (s as Partial<SettingsType>).proxyEnabled ?? true;
+  // Keep provider options live.
+  const liveOpts: SearxngOptions = { ...current() };
+  const syncLiveOpts = (cfg: SearxngBase): void => {
+    liveOpts.baseURL = cfg.baseURL;
+    liveOpts.username = cfg.username;
+    liveOpts.password = cfg.password;
+    liveOpts.categories = cfg.categories;
+    liveOpts.language = cfg.language;
+    liveOpts.safesearch = cfg.safesearch;
+    liveOpts.proxyUrl = cfg.proxyUrl;
+    liveOpts.proxyEnabled = cfg.proxyEnabled;
   };
 
-  // Authoritative source：settings 层 attach 前是 entry，之后是 resolved scope。
-  // installSettingsSection 调 setSource 先于匹配的 onChange，无需轮询。
-  let current: () => SettingsType = () => normalizedEntry;
+  ctx.effect(() => ctx.web.registerSearchProvider(new SearxngSearchProvider(liveOpts)), "searxng: search provider");
 
-  ctx.web.registerSearchProvider(new SearxngSearchProvider(liveOpts));
+  // Probe/refresh protocol: write request, then write result.
+  let writeBack: ((patch: object) => Promise<unknown>) | undefined;
+  const probeRunning = new Set<string>();
+  const refreshRunning = new Set<string>();
+  // Stop retrying failed round IDs.
+  let probeDeadId = "";
+  let refreshDeadId = "";
+  const scanProtocol = (): void => {
+    if (!writeBack) return;
+    const probeRequestId = config.probeRequestId.get();
+    if (
+      probeRequestId &&
+      probeRequestId !== config.probeResultId.get() &&
+      probeRequestId !== probeDeadId &&
+      !probeRunning.has(probeRequestId)
+    ) {
+      probeRunning.add(probeRequestId);
+      const snapshot = {
+        probeRequestId,
+        probeTargetsJson: config.probeTargetsJson.get(),
+        probeProxyUrl: config.probeProxyUrl.get(),
+        probeTimeoutMs: config.probeTimeoutMs.get(),
+      };
+      void runProbeRound(ctx, snapshot, writeBack)
+        .catch((err) => {
+          probeDeadId = probeRequestId;
+          ctx.logger.warn(`[searxng] probe round failed: ${String(err)}`);
+        })
+        .finally(() => probeRunning.delete(probeRequestId));
+    }
+    const refreshRequestId = config.refreshRequestId.get();
+    if (
+      refreshRequestId &&
+      refreshRequestId !== config.refreshResultId.get() &&
+      refreshRequestId !== refreshDeadId &&
+      !refreshRunning.has(refreshRequestId)
+    ) {
+      refreshRunning.add(refreshRequestId);
+      const snapshot = { refreshRequestId, instancesProxyUrl: config.instancesProxyUrl.get() };
+      void runRefreshRound(ctx, snapshot, writeBack)
+        .catch((err) => {
+          refreshDeadId = refreshRequestId;
+          ctx.logger.warn(`[searxng] instances refresh round failed: ${String(err)}`);
+        })
+        .finally(() => refreshRunning.delete(refreshRequestId));
+    }
+  };
 
-  // Settings namespace — live, validated, layered over entry.
-  // ctx.inject 可选接入：dsh-settings 缺席时只有搜索（entry 配置），不断插件。
-  const installSettings = (settingsService: SettingsProvider): void => {
-    settingsService.installSection(
-      ctx,
-      NS,
-      SearxngSettings as unknown as Parameters<typeof settingsService.installSection>[2],
-      normalizedEntry as unknown,
-      {
-        validate(value: unknown) {
-          assertServiceable(value as SettingsType);
-        },
-        setSource(next: () => SettingsType) {
-          current = next as () => SettingsType;
-        },
-        onChange() {
-          try {
-            const cfg = current();
-            assertServiceable(cfg);
-            syncLiveOpts(cfg);
-            ctx.logger.info(
-              `[searxng] config applied: baseURL=${cfg.baseURL ? redactBaseURL(cfg.baseURL) : "(unconfigured)"} ` +
-                `auth=${cfg.username ? "basic" : "none"} categories=${cfg.categories} ` +
-                `language=${cfg.language} safesearch=${cfg.safesearch} ` +
-                `proxy=${effectiveProxyUrl(cfg) ? redactProxyUrl(effectiveProxyUrl(cfg)) : "direct"}` +
-                `${cfg.proxyUrl && !effectiveProxyUrl(cfg) ? " (disabled, kept)" : ""}`,
-            );
-          } catch (err) {
-            ctx.logger.warn(`[searxng] settings change rejected: ${String(err)}`);
-          }
-        },
-      },
+  ctx.inject(["settings"], (settingsCtx: Context) => {
+    // Read the optional settings face.
+    const face = (settingsCtx as unknown as { settings?: SettingsFace }).settings;
+    if (typeof face?.update !== "function") return;
+    writeBack = (patch) => face.update!(NS, patch);
+    // Handle pending requests after restart.
+    scanProtocol();
+  });
+
+  const logApplied = (cfg: SearxngBase): void => {
+    ctx.logger.info(
+      `[searxng] config applied: baseURL=${cfg.baseURL ? redactBaseURL(cfg.baseURL) : "(unconfigured)"} ` +
+        `auth=${cfg.username ? "basic" : "none"} categories=${cfg.categories} ` +
+        `language=${cfg.language} safesearch=${cfg.safesearch} ` +
+        `proxy=${effectiveProxyUrl(cfg) ? redactProxyUrl(effectiveProxyUrl(cfg)) : "direct"}` +
+        `${cfg.proxyUrl && !effectiveProxyUrl(cfg) ? " (disabled, kept)" : ""}`,
     );
   };
 
-  ctx.inject(["settings"], (settingsCtx: { settings: SettingsProvider }) => {
-    installSettings(settingsCtx.settings);
-    // Connectivity probe channel for the settings card (request/response
-    // over the `searxng-probe` section — see probe.ts).
-    installProbeSection(ctx, settingsCtx.settings);
-    // Community-list refresh channel (runtime cache over the
-    // `searxng-instances` section — see instances.ts).
-    installInstancesSection(ctx, settingsCtx.settings);
+  ctx.on("loader/volatile-update", () => {
+    try {
+      const cfg = current();
+      assertServiceable(cfg);
+      syncLiveOpts(cfg);
+      logApplied(cfg);
+    } catch (err) {
+      // Keep serving after a bad committed value.
+      ctx.logger.warn(`[searxng] config change rejected: ${String(err)}`);
+    }
+    scanProtocol();
   });
 }

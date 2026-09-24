@@ -5,8 +5,12 @@
 # 只有 HOST 行是 loader 入口（specifier 字段是 `name:`）。浏览器 half 由
 # package.json#dsh.client 自动发现、下发到 /plugins/dsh-web-searxng/client.js，
 # 不要加第二行 loader（会把浏览器代码跑在 host 里）。
+#
+# entry id 即 settings namespace（volatile Config 字段投成 `searxng` 节，
+# probe/instances 通道字段同走此 entry，不另设 loader 行）；改名会同时
+# 破坏 settings UI 与 client 卡片两端。
 - insert:
-    - id: web-searxng/host
+    - id: searxng
       name: dsh-web-searxng
       config:
         baseURL: !!js process.env.SEARXNG_BASE_URL

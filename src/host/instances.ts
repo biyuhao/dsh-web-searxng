@@ -1,63 +1,8 @@
-/**
- * Host-side community-list refresh over the `searxng-instances` section.
- *
- * Same request/response channel as the probe (see probe.ts): the card writes
- * a refresh *request* and the host fetches searx.space, curates the list,
- * and writes it back into the section as the runtime cache. The bundled
- * snapshot (`src/client/instances.snapshot.json`) stays the offline default;
- * a fresher cached list wins when present.
- *
- * Why host-side: browsers cannot fetch searx.space cross-origin, and
- * restricted machines need the egress proxy — the same reason probes run
- * host-side. Refresh reuses the card's current `proxyUrl` ("" = direct).
- *
- * Protocol: client sets `proxyUrl`, then `refreshRequestId` LAST with a
- * fresh id. Host `onChange` acts only on unanswered ids and `update()`s
- * `{instancesJson, fetchedAt, refreshResultId, refreshError}`. A failed
- * fetch is a section-level `refreshError` (old cache stays untouched).
- */
+/** Refresh instances. */
 
-import z from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
-import type { SettingsProvider } from "@deepseek-ai/dsh-settings";
 import { fetch as undiciFetch } from "undici";
 import { getOrCreateDispatcher, isValidProxyUrl } from "./dispatcher.js";
-
-/** Settings namespace carrying the cached list + refresh round-trip. */
-export const INSTANCES_NS = "searxng-instances" as const;
-
-export const InstancesSectionSchema: any = z.object({
-  /** JSON array of curated instances (the runtime cache). "[]" = none. */
-  instancesJson: z.string(),
-  /** ISO time the cache was fetched. "" = never. */
-  fetchedAt: z.string(),
-  /** Egress proxy for the searx.space fetch. "" = direct. */
-  proxyUrl: z.string(),
-  /** Fresh id per refresh, written LAST by the client. "" = idle. */
-  refreshRequestId: z.string(),
-  /** refreshRequestId this result answers. "" = none yet. */
-  refreshResultId: z.string(),
-  /** Refresh-level failure (fetch/parse). "" = none. Cache untouched. */
-  refreshError: z.string(),
-});
-
-export type InstancesSection = {
-  instancesJson: string;
-  fetchedAt: string;
-  proxyUrl: string;
-  refreshRequestId: string;
-  refreshResultId: string;
-  refreshError: string;
-};
-
-export const instancesSectionEntry: InstancesSection = {
-  instancesJson: "[]",
-  fetchedAt: "",
-  proxyUrl: "",
-  refreshRequestId: "",
-  refreshResultId: "",
-  refreshError: "",
-};
 
 export type CuratedInstance = {
   url: string;
@@ -67,12 +12,12 @@ export type CuratedInstance = {
   version: string | null;
 };
 
-/** Refresh source (overridable for tests) + kept rows. Mirrors scripts/update-instances.mjs. */
+/** Refresh source and cache size. */
 export const INSTANCES_SOURCE = "https://searx.space/data/instances.json";
 export const INSTANCES_KEEP = 100;
 export const INSTANCES_FETCH_TIMEOUT_MS = 30_000;
 
-// --- tolerant searx-stats2 parsing (ported from scripts/update-instances.mjs) ---
+// Tolerant searx-stats2 parsing.
 
 type Rec = Record<string, unknown>;
 
@@ -154,7 +99,7 @@ function latencyFromStats2(info: Rec): number | null {
   return null;
 }
 
-/** Fetch + curate. Throws on fetch/HTTP/parse failure (caller records refreshError). */
+/** Fetch and curate instances. */
 export async function fetchCuratedInstances(
   proxyUrl: string,
   source: string = INSTANCES_SOURCE,
@@ -207,69 +152,27 @@ export async function fetchCuratedInstances(
   }
 }
 
-/** Run one refresh round and write the result back (never throws). */
-async function runRefresh(
-  settings: SettingsProvider,
+/** Run one refresh round and write its result. */
+export async function runRefreshRound(
   ctx: Context,
-  snapshot: InstancesSection,
+  snapshot: { refreshRequestId: string; instancesProxyUrl: string },
+  writeBack: (patch: object) => Promise<unknown>,
 ): Promise<void> {
   try {
-    const list = await fetchCuratedInstances(snapshot.proxyUrl);
-    await settings.update(INSTANCES_NS, {
-      instancesJson: JSON.stringify(list),
-      fetchedAt: new Date().toISOString(),
+    const list = await fetchCuratedInstances(snapshot.instancesProxyUrl);
+    await writeBack({
       refreshResultId: snapshot.refreshRequestId,
+      instancesJson: JSON.stringify(list),
+      instancesFetchedAt: new Date().toISOString(),
       refreshError: "",
     });
     ctx.logger.info(`[searxng] instances refreshed: ${list.length} rows`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     ctx.logger.warn(`[searxng] instances refresh failed: ${message}`);
-    await settings.update(INSTANCES_NS, {
+    await writeBack({
       refreshResultId: snapshot.refreshRequestId,
       refreshError: message.length > 200 ? `${message.slice(0, 200)}…` : message,
     });
   }
-}
-
-export function installInstancesSection(ctx: Context, settings: SettingsProvider): void {
-  let current: () => InstancesSection = () => ({ ...instancesSectionEntry });
-  const running = new Set<string>();
-
-  const maybeRun = (cfg: InstancesSection): void => {
-    if (!cfg.refreshRequestId || cfg.refreshRequestId === cfg.refreshResultId || running.has(cfg.refreshRequestId)) {
-      return;
-    }
-    running.add(cfg.refreshRequestId);
-    const snapshot = { ...cfg };
-    void runRefresh(settings, ctx, snapshot)
-      .catch((err) => {
-        ctx.logger.warn(`[searxng] instances refresh round failed: ${String(err)}`);
-      })
-      .finally(() => {
-        running.delete(snapshot.refreshRequestId);
-      });
-  };
-
-  settings.installSection(
-    ctx,
-    INSTANCES_NS,
-    InstancesSectionSchema as unknown as Parameters<typeof settings.installSection>[2],
-    { ...instancesSectionEntry },
-    {
-      setSource: (source) => {
-        current = source as () => InstancesSection;
-      },
-      onChange: () => {
-        let cfg: InstancesSection;
-        try {
-          cfg = current();
-        } catch (err) {
-          ctx.logger.warn(`[searxng] instances section unreadable: ${String(err)}`);
-          return;
-        }
-        maybeRun(cfg);
-      },
-    },
-  );
 }

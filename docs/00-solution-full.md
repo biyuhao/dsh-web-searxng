@@ -4,6 +4,12 @@
 > DSH 侧官方没有 SearXNG provider（只有 exa / perplexity / deepseek 三个），所以要写一个约 120 行的
 > `dsh-web-searxng` 小插件注册到 `ctx.web`，再用 `dsh-tool-web` 暴露 `web_search` 给模型。
 > 下面所有配置都可直接复制上线。
+>
+> **2026-09-24 迁移**：插件已适配 dsh 0.1.7 volatile Config 架构——entry id 即 settings namespace
+> （现为 `searxng`），`apply` 收到的是逐字段 volatile 引用；probe/instances 通道复用同一 entry 的
+> Config 字段（`probeRequestId` 等前缀字段），卡片经 `configForms.get('searxng')` 读写、host 经
+> `settings.update` 回写。本文写作于旧架构（`installSection` / `web-searxng/host`）时期，细节以
+> 仓库当前源码与 `cordis.patch.yml` 为准。
 
 ```
 ┌─────────────┐   web_search(queries[])   ┌──────────────────────────┐   GET /search?q=&format=json  ┌──────────────┐
@@ -325,7 +331,7 @@ interface WebSearchProvider {
 
 ```yaml
 - insert:
-    - id: web-searxng/host
+    - id: searxng
       name: dsh-web-searxng
       config:
         baseURL: !!js process.env.SEARXNG_BASE_URL
@@ -438,7 +444,7 @@ dsh plugin --profile web add /path/to/dsh-web-searxng
         fetchProvider: http
     - id: dsh-web-fetch-http
       name: '@deepseek-ai/dsh-web-fetch-http'
-    - id: web-searxng/host
+    - id: searxng
       name: dsh-web-searxng
       config:
         baseURL: !!js process.env.SEARXNG_BASE_URL      # https://search.example.com
