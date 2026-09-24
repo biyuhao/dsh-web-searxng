@@ -1,10 +1,16 @@
 /**
  * Client controller for the searxng settings card.
- * Binds to the `searxng` namespace via ctx.configForms and exposes
- * a small observable store for the card.
+ * Binds to the `searxng` config form (the host entry's volatile fields) and
+ * exposes a small observable store for the card. Probe and instance-refresh
+ * rounds ride the SAME form's protocol fields — see `src/host/probe.ts`.
  */
 
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+/** Structural face of `ConfigForm` used here (avoids a runtime type import). */
+export type ConfigFormScope = {
+  getSnapshot(): any
+  subscribe(cb: () => void): () => void
+  set(field: string, value: unknown): Promise<boolean>
+}
 
 export type SearxngConfig = {
   baseURL: string
@@ -34,19 +40,12 @@ export type SearxngSnapshot = {
   value?: SearxngConfig
   revision?: number
   writable: boolean
-  error?: string
 }
 
 /**
- * Connectivity probe faces. Mirror `src/host/probe.ts` (`ProbeTarget` /
- * `ProbeTargetResult`) without importing it: the client bundle compiles only
- * `src/client/**`, and this file intentionally duplicates the two shapes
- * (same precedent as `validateConfig` mirroring the host schema).
- *
- * Transport (see `src/host/probe.ts`): the card writes a request into the
- * `searxng-probe` settings section and the host writes the result back.
- * No host↔client RPC — the client platform gates `ctx.remote.<ns>` property
- * access by fiber injects that third-party entries cannot satisfy.
+ * Connectivity probe faces, mirroring `src/host/probe.ts` (`ProbeTarget` /
+ * `ProbeTargetResult`). Intentionally duplicated: the client bundle compiles
+ * only `src/client/**` and cannot import host types.
  */
 export type ProbeTarget = {
   url: string
@@ -67,15 +66,10 @@ export type ProbeTargetResult = {
   error?: string
 }
 
-/** Settings namespace carrying probe requests and results (see host). */
-export const PROBE_NS = 'searxng-probe'
 /** Upper bound for one batch round (host caps too). */
 export const PROBE_MAX_TARGETS = 12
 /** Round-trip wait before the card reports "no answer" (host fans out in parallel). */
 export const PROBE_ROUND_TIMEOUT_MS = 50_000
-
-/** Runtime community-list cache + refresh channel (see host instances.ts). */
-export const INSTANCES_NS = 'searxng-instances'
 /** Refresh wait (host fetches searx.space with a 30s cap, then curates). */
 export const INSTANCES_REFRESH_TIMEOUT_MS = 60_000
 
@@ -143,18 +137,17 @@ function canParseUrl(v: string): boolean {
   }
 }
 
+function freshRequestId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export class SearxngController {
   private listeners = new Set<Listener>()
   private snapshot: SearxngSnapshot = { status: 'loading', writable: false }
   private unsub?: () => void
-  private probeScope?: any
-  private probeScopeFailed = false
-  private probeUnsubs = new Set<() => void>()
+  private roundUnsubs = new Set<() => void>()
 
-  constructor(
-    private readonly scope: SettingsScope<SearxngConfig>,
-    private readonly configForms?: any,
-  ) {}
+  constructor(private readonly scope: ConfigFormScope) {}
 
   bind(): void {
     this.unsub = this.scope.subscribe(() => this.pull())
@@ -164,14 +157,14 @@ export class SearxngController {
   dispose(): void {
     this.unsub?.()
     this.listeners.clear()
-    for (const unsub of this.probeUnsubs) {
+    for (const unsub of this.roundUnsubs) {
       try {
         unsub()
       } catch {
         /* ignore */
       }
     }
-    this.probeUnsubs.clear()
+    this.roundUnsubs.clear()
   }
 
   subscribe(l: Listener): () => void {
@@ -189,14 +182,12 @@ export class SearxngController {
       value?: SearxngConfig
       revision?: number
       writable: boolean
-      error?: string
     }
     this.snapshot = {
       status: (s.status as SearxngSnapshot['status']) ?? 'loading',
       value: s.value,
       revision: s.revision,
       writable: s.writable,
-      ...(s.error ? { error: s.error } : {}),
     }
     this.emit()
   }
@@ -205,37 +196,39 @@ export class SearxngController {
     for (const l of [...this.listeners]) l()
   }
 
-  /** Persist the staged form as one field write per key. */
+  /** Persist the staged form as fenced per-field writes (refusal aborts the rest). */
   async save(next: SearxngConfig): Promise<void> {
     for (const key of SEARXNG_FIELD_KEYS) {
-      await this.scope.set(key, next[key])
+      if (!(await this.scope.set(key, next[key]))) throw new Error(`save-refused: ${key}`)
     }
   }
 
+  /** Read one protocol field from the live section value. */
+  private fieldValue(key: string): unknown {
+    const snap = this.scope.getSnapshot() as unknown as { value?: Record<string, unknown> }
+    return snap?.value?.[key]
+  }
+
   /**
-   * Run one probe round through the `searxng-probe` settings section: write
-   * the request (requestId LAST), wait for the host's matching result.
-   *
-   * The probe scope binds lazily so a host that predates the section fails
-   * here with `probe-unsupported` instead of killing the card. A host that
-   * never answers (also: old host) trips `probe-timeout`. Per-target
-   * failures are normal outcomes (`ok: false`), never thrown.
+   * Run one probe round through the shared `searxng` form: write the request
+   * fields (probeRequestId LAST), wait for the host's matching probeResultId.
+   * Per-target failures are normal outcomes (`ok: false`), never thrown; a
+   * round-level failure rejects with `probe-round: <reason>`.
    */
   async probeBatch(
     targets: ProbeTarget[],
     opts?: { proxyUrl?: string; timeoutMs?: number },
   ): Promise<ProbeTargetResult[]> {
-    const scope = this.ensureProbeScope()
     const list = targets.slice(0, PROBE_MAX_TARGETS)
     if (list.length === 0) return []
-    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-    try {
-      await scope.set('targetsJson', JSON.stringify(list))
-      await scope.set('proxyUrl', opts?.proxyUrl ?? '')
-      await scope.set('timeoutMs', opts?.timeoutMs ?? 12_000)
-      await scope.set('error', '')
-      await scope.set('requestId', requestId)
-    } catch {
+    const requestId = freshRequestId()
+    if (
+      !(await this.scope.set('probeTargetsJson', JSON.stringify(list))) ||
+      !(await this.scope.set('probeProxyUrl', opts?.proxyUrl ?? '')) ||
+      !(await this.scope.set('probeTimeoutMs', opts?.timeoutMs ?? 12_000)) ||
+      !(await this.scope.set('probeError', '')) ||
+      !(await this.scope.set('probeRequestId', requestId))
+    ) {
       throw new Error('probe-unsupported')
     }
     return new Promise<ProbeTargetResult[]>((resolve, reject) => {
@@ -244,7 +237,7 @@ export class SearxngController {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        this.probeUnsubs.delete(unsub)
+        this.roundUnsubs.delete(unsub)
         try {
           unsub()
         } catch {
@@ -256,23 +249,17 @@ export class SearxngController {
         done(() => reject(new Error('probe-timeout')))
       }, PROBE_ROUND_TIMEOUT_MS)
       const check = (): void => {
-        let snap: unknown
-        try {
-          snap = scope.getSnapshot()
-        } catch {
+        if (this.fieldValue('probeResultId') !== requestId) return
+        const roundError = this.fieldValue('probeError')
+        if (typeof roundError === 'string' && roundError) {
+          done(() => reject(new Error(`probe-round: ${roundError}`)))
           return
         }
-        const value = (snap as { value?: Record<string, unknown> })?.value
-        if (!value || value.resultId !== requestId) return
-        if (typeof value.error === 'string' && value.error) {
-          const msg = value.error
-          done(() => reject(new Error(`probe-round: ${msg}`)))
-          return
-        }
-        if (typeof value.resultsJson !== 'string') return
+        const raw = this.fieldValue('probeResultsJson')
+        if (typeof raw !== 'string') return
         let results: unknown
         try {
-          results = JSON.parse(value.resultsJson)
+          results = JSON.parse(raw)
         } catch {
           done(() => reject(new Error('probe-round: malformed results')))
           return
@@ -284,85 +271,41 @@ export class SearxngController {
         const parsed = results as ProbeTargetResult[]
         done(() => resolve(parsed))
       }
-      const unsub = scope.subscribe(check)
-      this.probeUnsubs.add(unsub)
+      const unsub = this.scope.subscribe(check)
+      this.roundUnsubs.add(unsub)
       check()
     })
   }
 
-  private ensureProbeScope(): any {
-    if (this.probeScope) return this.probeScope
-    if (this.probeScopeFailed || !this.configForms || typeof this.configForms.get !== 'function') {
-      throw new Error('probe-unsupported')
-    }
-    try {
-      this.probeScope = this.configForms.get(PROBE_NS)
-      return this.probeScope
-    } catch {
-      this.probeScopeFailed = true
-      throw new Error('probe-unsupported')
-    }
-  }
-
-  private instancesScope?: any
-  private instancesScopeFailed = false
-
-  private ensureInstancesScope(): any {
-    if (this.instancesScope) return this.instancesScope
-    if (this.instancesScopeFailed || !this.configForms || typeof this.configForms.get !== 'function') {
-      throw new Error('refresh-unsupported')
-    }
-    try {
-      this.instancesScope = this.configForms.get(INSTANCES_NS)
-      return this.instancesScope
-    } catch {
-      this.instancesScopeFailed = true
-      throw new Error('refresh-unsupported')
-    }
-  }
-
-  private readInstancesValue(): Record<string, unknown> | undefined {
-    let snap: unknown
-    try {
-      snap = this.ensureInstancesScope().getSnapshot()
-    } catch {
-      return undefined
-    }
-    const value = (snap as { value?: Record<string, unknown> })?.value
-    return value && typeof value === 'object' ? value : undefined
-  }
-
   /** Read the cached community list without requesting a refresh (mount path). */
   readInstancesCache(): InstancesCache | undefined {
-    const value = this.readInstancesValue()
-    if (!value || typeof value.instancesJson !== 'string' || typeof value.fetchedAt !== 'string') {
+    const instancesJson = this.fieldValue('instancesJson')
+    const fetchedAt = this.fieldValue('instancesFetchedAt')
+    if (typeof instancesJson !== 'string' || typeof fetchedAt !== 'string' || !fetchedAt) {
       return undefined
     }
     let parsed: unknown
     try {
-      parsed = JSON.parse(value.instancesJson)
+      parsed = JSON.parse(instancesJson)
     } catch {
       return undefined
     }
-    if (!Array.isArray(parsed) || parsed.length === 0 || !value.fetchedAt) return undefined
-    return { instances: parsed as RefreshedInstance[], fetchedAt: value.fetchedAt }
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined
+    return { instances: parsed as RefreshedInstance[], fetchedAt }
   }
 
   /**
-   * Refresh the community list through the `searxng-instances` section:
-   * write the request (refreshRequestId LAST), wait for the host fetch.
-   * Old-host failures surface as `refresh-unsupported` / `refresh-timeout`;
-   * a failed fetch surfaces as `refresh: <reason>` and leaves the old
-   * cache (and the bundled snapshot) untouched.
+   * Refresh the community list through the shared form: write the request
+   * (refreshRequestId LAST), wait for the host fetch. A failed fetch rejects
+   * with `refresh: <reason>` and leaves the old cache untouched.
    */
   async refreshInstances(opts?: { proxyUrl?: string }): Promise<InstancesCache> {
-    const scope = this.ensureInstancesScope()
-    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-    try {
-      await scope.set('proxyUrl', opts?.proxyUrl ?? '')
-      await scope.set('refreshError', '')
-      await scope.set('refreshRequestId', requestId)
-    } catch {
+    const requestId = freshRequestId()
+    if (
+      !(await this.scope.set('instancesProxyUrl', opts?.proxyUrl ?? '')) ||
+      !(await this.scope.set('refreshError', '')) ||
+      !(await this.scope.set('refreshRequestId', requestId))
+    ) {
       throw new Error('refresh-unsupported')
     }
     return new Promise<InstancesCache>((resolve, reject) => {
@@ -371,7 +314,7 @@ export class SearxngController {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        this.probeUnsubs.delete(unsub)
+        this.roundUnsubs.delete(unsub)
         try {
           unsub()
         } catch {
@@ -383,17 +326,18 @@ export class SearxngController {
         done(() => reject(new Error('refresh-timeout')))
       }, INSTANCES_REFRESH_TIMEOUT_MS)
       const check = (): void => {
-        const value = this.readInstancesValue()
-        if (!value || value.refreshResultId !== requestId) return
-        if (typeof value.refreshError === 'string' && value.refreshError) {
-          const msg = value.refreshError
-          done(() => reject(new Error(`refresh: ${msg}`)))
+        if (this.fieldValue('refreshResultId') !== requestId) return
+        const roundError = this.fieldValue('refreshError')
+        if (typeof roundError === 'string' && roundError) {
+          done(() => reject(new Error(`refresh: ${roundError}`)))
           return
         }
-        if (typeof value.instancesJson !== 'string' || typeof value.fetchedAt !== 'string') return
+        const instancesJson = this.fieldValue('instancesJson')
+        const fetchedAt = this.fieldValue('instancesFetchedAt')
+        if (typeof instancesJson !== 'string' || typeof fetchedAt !== 'string') return
         let parsed: unknown
         try {
-          parsed = JSON.parse(value.instancesJson)
+          parsed = JSON.parse(instancesJson)
         } catch {
           done(() => reject(new Error('refresh: malformed list')))
           return
@@ -402,14 +346,10 @@ export class SearxngController {
           done(() => reject(new Error('refresh: empty list')))
           return
         }
-        const cache: InstancesCache = {
-          instances: parsed as RefreshedInstance[],
-          fetchedAt: value.fetchedAt,
-        }
-        done(() => resolve(cache))
+        done(() => resolve({ instances: parsed as RefreshedInstance[], fetchedAt }))
       }
-      const unsub = scope.subscribe(check)
-      this.probeUnsubs.add(unsub)
+      const unsub = this.scope.subscribe(check)
+      this.roundUnsubs.add(unsub)
       check()
     })
   }

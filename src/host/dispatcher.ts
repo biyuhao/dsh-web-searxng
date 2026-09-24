@@ -13,6 +13,7 @@
 
 import { ProxyAgent, Agent } from "undici";
 import { createRequire } from "node:module";
+import { isIP } from "node:net";
 import tls from "node:tls";
 
 const cache = new Map<string, unknown>();
@@ -95,12 +96,12 @@ function createSocksDispatcher(proxyUrl: string): unknown {
 
     const finishRaw = (raw: import("net").Socket) => {
       if (opts.protocol === "https:" || port === 443) {
-        const secure = tls.connect({
-          socket: raw,
-          servername: opts.servername ?? host,
-          host,
-          port,
-        });
+        // RFC 6066 禁止 SNI 携带 IP 字面量（Node 会打 DEP0123）；IP 直连时
+        // 省略 servername，证书校验仍按 host 走。
+        const servername = opts.servername ?? host;
+        const tlsOpts: import("tls").ConnectionOptions = { socket: raw, host, port };
+        if (servername && !isIP(servername)) tlsOpts.servername = servername;
+        const secure = tls.connect(tlsOpts);
         secure.once("secureConnect", () => callback(null, secure));
         secure.once("error", (err) => callback(err));
       } else {

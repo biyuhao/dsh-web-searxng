@@ -20,9 +20,7 @@ export function apply(ctx: ClientContext): void {
   )
 
   const scope = ctx.configForms.get('searxng')
-  // The probe round-trip uses a second settings section (`searxng-probe`);
-  // the controller binds it lazily and degrades when the host predates it.
-  const ctrl = new SearxngController(scope as never, ctx.configForms)
+  const ctrl = new SearxngController(scope as never)
   // Subscribe lifecycle tied to this plugin fiber
   ctx.effect(() => {
     ctrl.bind()

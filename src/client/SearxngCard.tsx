@@ -274,7 +274,6 @@ export function SearxngCard({ controller, t: tProp }: Props) {
     return (
       <div className="sx_card">
         <span className="sx_error">{t('unavailable')}</span>
-        {snap.error && <span className="sx_hint">{snap.error}</span>}
       </div>
     )
   }
@@ -661,7 +660,8 @@ function CommunityPicker(props: {
     // `tick` re-runs the sort as silent probes settle (cache itself is not reactive).
   }, [snap, remote, proxyUrl, round, tick])
 
-  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
+  const rowStatus = (url: string): { mark: string; text: string; failed: boolean } => {
+    const p = rowProbeCache.get(rowProbeKey(url, proxyUrl))
     if (!p) return { mark: '○', text: t('probeQueued'), failed: false }
     if (p.status === 'testing') return { mark: '○', text: t('probeRowTesting'), failed: false }
     if (p.status === 'ok') {
